@@ -483,15 +483,20 @@ def _upsert_current_channel_preference(settings: Settings) -> None:
         return
     db = AppDatabase(DB_PATH)
     try:
+        existing = db.get_channel_preferences(channel_ref)
         db.upsert_channel_preferences(
             channel_ref=channel_ref,
-            channel_id=0,
-            channel_title=channel_ref,
-            check_new=False,
-            auto_download=False,
-            auto_sftp=False,
-            auto_ftps=False,
-            cleanup_local=bool(settings.cleanup_local_after_sftp or settings.cleanup_local_after_ftps),
+            channel_id=int(existing.get("channel_id", 0)) if existing else 0,
+            channel_title=(existing.get("channel_title") or channel_ref) if existing else channel_ref,
+            check_new=bool(existing.get("check_new")) if existing else False,
+            auto_download=bool(existing.get("auto_download")) if existing else False,
+            auto_sftp=bool(existing.get("auto_sftp")) if existing else False,
+            auto_ftps=bool(existing.get("auto_ftps")) if existing else False,
+            cleanup_local=(
+                bool(existing.get("cleanup_local"))
+                if existing
+                else bool(settings.cleanup_local_after_sftp or settings.cleanup_local_after_ftps)
+            ),
         )
     finally:
         db.close()

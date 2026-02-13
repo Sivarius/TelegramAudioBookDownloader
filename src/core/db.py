@@ -308,6 +308,40 @@ class AppDatabase:
             )
         return items
 
+    def get_channel_preferences(self, channel_ref: str) -> Optional[dict]:
+        ref = (channel_ref or "").strip()
+        if not ref:
+            return None
+        cur = self._conn.execute(
+            """
+            SELECT
+                channel_ref, channel_id, channel_title,
+                check_new, auto_download, auto_sftp, auto_ftps, cleanup_local,
+                last_checked_at, has_new_audio, latest_audio_id, last_error, updated_at
+            FROM channel_preferences
+            WHERE channel_ref = ?
+            """,
+            (ref,),
+        )
+        row = cur.fetchone()
+        if not row:
+            return None
+        return {
+            "channel_ref": row[0] or "",
+            "channel_id": int(row[1] or 0),
+            "channel_title": row[2] or "",
+            "check_new": bool(int(row[3] or 0)),
+            "auto_download": bool(int(row[4] or 0)),
+            "auto_sftp": bool(int(row[5] or 0)),
+            "auto_ftps": bool(int(row[6] or 0)),
+            "cleanup_local": bool(int(row[7] or 0)),
+            "last_checked_at": row[8] or "",
+            "has_new_audio": bool(int(row[9] or 0)),
+            "latest_audio_id": int(row[10] or 0),
+            "last_error": row[11] or "",
+            "updated_at": row[12] or "",
+        }
+
     def upsert_channel_preferences(
         self,
         channel_ref: str,
