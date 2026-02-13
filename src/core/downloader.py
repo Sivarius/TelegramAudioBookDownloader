@@ -180,6 +180,17 @@ async def download_if_needed(
             status_hook({"event": "downloaded", "message_id": message.id, "file_path": str(file_path)})
     except FloodWaitError:
         raise
+    except asyncio.CancelledError:
+        target_path = _build_target_path(download_dir, message, existing_path)
+        temp_path = target_path.with_name(f"{target_path.name}.part")
+        if temp_path.exists():
+            try:
+                temp_path.unlink()
+            except Exception:
+                logging.warning("Failed to remove temp file after cancel: %s", temp_path)
+        if status_hook:
+            status_hook({"event": "failed", "message_id": message.id, "reason": "cancelled"})
+        raise
     except Exception as exc:
         logging.exception("Failed to download message_id=%s", message.id)
         target_path = _build_target_path(download_dir, message, existing_path)
@@ -300,6 +311,7 @@ async def run_downloader(
 ) -> None:
     db = AppDatabase(db_path)
     sftp_sync = SFTPSync(settings)
+    client = None
     try:
         settings.download_dir.mkdir(parents=True, exist_ok=True)
         db.store_settings(settings)
@@ -431,6 +443,11 @@ async def run_downloader(
             if not listener_task.done():
                 listener_task.cancel()
     finally:
+        if client is not None:
+            try:
+                await client.disconnect()
+            except Exception:
+                logging.exception("Failed to disconnect Telegram client")
         if sftp_sync.enabled:
             try:
                 await asyncio.to_thread(sftp_sync.close)

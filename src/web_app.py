@@ -64,6 +64,8 @@ _setup_debug_log_handler()
 worker_lock = threading.Lock()
 worker_thread: Optional[threading.Thread] = None
 worker_stop_event = threading.Event()
+worker_loop: Optional[asyncio.AbstractEventLoop] = None
+worker_main_task: Optional[asyncio.Task] = None
 monitor_thread: Optional[threading.Thread] = None
 monitor_stop_event = threading.Event()
 runtime_session_name = ""
@@ -792,7 +794,7 @@ def _start_worker(
     live_mode: bool = True,
     source: str = "manual",
 ) -> tuple[bool, str]:
-    global worker_thread
+    global worker_thread, worker_loop, worker_main_task
 
     with worker_lock:
         if worker_thread and worker_thread.is_alive():
@@ -966,8 +968,11 @@ def _start_worker(
                 _set_status(message=f"Локальный файл удален после SFTP: message_id={message_id}")
 
         def _target() -> None:
+            loop: Optional[asyncio.AbstractEventLoop] = None
             try:
-                asyncio.run(
+                loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(loop)
+                main_task = loop.create_task(
                     run_downloader(
                         settings=settings,
                         db_path=DB_PATH,
@@ -977,10 +982,30 @@ def _start_worker(
                         live_mode=live_mode,
                     )
                 )
+                with worker_lock:
+                    worker_loop = loop
+                    worker_main_task = main_task
+                loop.run_until_complete(main_task)
+            except asyncio.CancelledError:
+                _set_status(message="Загрузка прервана пользователем.", running=False)
             except Exception as exc:
                 logging.exception("Downloader crashed")
                 _set_status(message=f"Ошибка загрузчика: {exc}", running=False)
             finally:
+                with worker_lock:
+                    worker_loop = None
+                    worker_main_task = None
+                if loop is not None:
+                    try:
+                        pending = [t for t in asyncio.all_tasks(loop) if not t.done()]
+                        for task in pending:
+                            task.cancel()
+                        if pending:
+                            loop.run_until_complete(asyncio.gather(*pending, return_exceptions=True))
+                    except Exception:
+                        logging.exception("Failed to finalize worker event loop")
+                    finally:
+                        loop.close()
                 _set_status(running=False)
 
         worker_thread = threading.Thread(target=_target, daemon=True)
@@ -1311,6 +1336,12 @@ def stop_server():
     global worker_thread, monitor_thread
 
     worker_stop_event.set()
+    with worker_lock:
+        if worker_loop and worker_main_task and not worker_main_task.done():
+            try:
+                worker_loop.call_soon_threadsafe(worker_main_task.cancel)
+            except Exception:
+                logging.exception("Failed to cancel worker task during server stop")
     monitor_stop_event.set()
     _set_status(message="Остановка сервера...", running=False)
 
@@ -1346,6 +1377,12 @@ def stop_download():
         return _render(form, "Активная загрузка не выполняется.")
 
     worker_stop_event.set()
+    with worker_lock:
+        if worker_loop and worker_main_task and not worker_main_task.done():
+            try:
+                worker_loop.call_soon_threadsafe(worker_main_task.cancel)
+            except Exception:
+                logging.exception("Failed to cancel worker task")
     _set_status(message="Запрошена остановка текущей загрузки...")
     worker_thread.join(timeout=15)
 
