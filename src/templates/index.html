@@ -147,6 +147,15 @@
       color: var(--text);
       background: var(--input-bg);
     }
+    .field-sm input {
+      max-width: 210px;
+    }
+    .index-inline {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(180px, 220px));
+      gap: 12px;
+      align-items: end;
+    }
     .btn-row {
       display: flex;
       gap: 10px;
@@ -330,6 +339,12 @@
       .grid {
         grid-template-columns: 1fr;
       }
+      .field-sm input {
+        max-width: 100%;
+      }
+      .index-inline {
+        grid-template-columns: 1fr;
+      }
     }
   </style>
 </head>
@@ -467,21 +482,21 @@
             </div>
             <input name="session_name" value="{{ form.session_name }}">
           </div>
-          <div>
+          <div class="field-sm">
             <div class="label-row">
               <label>STARTUP_SCAN_LIMIT</label>
               <span class="help" tabindex="0" data-tip="Сколько последних сообщений проверить при старте.">?</span>
             </div>
             <input name="startup_scan_limit" value="{{ form.startup_scan_limit }}">
           </div>
-          <div>
+          <div class="field-sm">
             <div class="label-row">
               <label>Потоков загрузки</label>
               <span class="help" tabindex="0" data-tip="Сколько аудиофайлов скачивать одновременно. Рекомендуется 2-4.">?</span>
             </div>
             <input name="download_concurrency" value="{{ form.download_concurrency }}" placeholder="3">
           </div>
-          <div>
+          <div class="field-sm">
             <div class="label-row">
               <label>Код из Telegram (если запросили)</label>
               <span class="help" tabindex="0" data-tip="Одноразовый код подтверждения, который Telegram присылает при входе.">?</span>
@@ -495,19 +510,23 @@
             </div>
             <input type="password" name="password" value="{{ form.password }}" placeholder="Пароль 2FA">
           </div>
-          <div>
-            <div class="label-row">
-              <label>С индекса</label>
-              <span class="help" tabindex="0" data-tip="Начальный номер аудио из правого списка предпросмотра.">?</span>
+          <div class="full">
+            <div class="index-inline">
+              <div class="field-sm">
+                <div class="label-row">
+                  <label>С индекса</label>
+                  <span class="help" tabindex="0" data-tip="Начальный номер аудио из правого списка предпросмотра.">?</span>
+                </div>
+                <input id="from_index" name="from_index" value="{{ form.from_index }}" placeholder="1">
+              </div>
+              <div class="field-sm">
+                <div class="label-row">
+                  <label>По индекс</label>
+                  <span class="help" tabindex="0" data-tip="Конечный номер аудио из правого списка предпросмотра.">?</span>
+                </div>
+                <input id="to_index" name="to_index" value="{{ form.to_index }}" placeholder="50">
+              </div>
             </div>
-            <input id="from_index" name="from_index" value="{{ form.from_index }}" placeholder="1">
-          </div>
-          <div>
-            <div class="label-row">
-              <label>По индекс</label>
-              <span class="help" tabindex="0" data-tip="Конечный номер аудио из правого списка предпросмотра.">?</span>
-            </div>
-            <input id="to_index" name="to_index" value="{{ form.to_index }}" placeholder="50">
           </div>
           <div class="full">
             <div class="check-row">
