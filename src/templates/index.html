@@ -150,9 +150,12 @@
     .field-sm input {
       max-width: 210px;
     }
+    .field-xs input {
+      max-width: 150px;
+    }
     .index-inline {
       display: grid;
-      grid-template-columns: repeat(2, minmax(180px, 220px));
+      grid-template-columns: minmax(260px, 320px) repeat(2, minmax(120px, 150px));
       gap: 12px;
       align-items: end;
     }
@@ -394,6 +397,9 @@
       .field-sm input {
         max-width: 100%;
       }
+      .field-xs input {
+        max-width: 100%;
+      }
       .index-inline {
         grid-template-columns: 1fr;
       }
@@ -454,12 +460,19 @@
               <div class="index-inline">
                 <div class="field-sm">
                   <div class="label-row">
+                    <label>CHANNEL_ID</label>
+                    <span class="help" tabindex="0" data-tip="Username канала (@mychannel) или числовой id (-100...).">?</span>
+                  </div>
+                  <input id="channel_id" name="channel_id" value="{{ form.channel_id }}" placeholder="@channel or -100..." required>
+                </div>
+                <div class="field-xs">
+                  <div class="label-row">
                     <label>С индекса</label>
                     <span class="help" tabindex="0" data-tip="Начальный номер аудио из правого списка предпросмотра.">?</span>
                   </div>
                   <input id="from_index" name="from_index" value="{{ form.from_index }}" placeholder="1">
                 </div>
-                <div class="field-sm">
+                <div class="field-xs">
                   <div class="label-row">
                     <label>По индекс</label>
                     <span class="help" tabindex="0" data-tip="Конечный номер аудио из правого списка предпросмотра.">?</span>
@@ -508,13 +521,6 @@
                 <span class="help" tabindex="0" data-tip="Номер Telegram-аккаунта в международном формате, например +79990001122.">?</span>
               </div>
               <input class="tg-secret" type="password" name="phone" value="{{ form.phone }}" placeholder="+79990001122" required>
-            </div>
-            <div>
-              <div class="label-row">
-                <label>CHANNEL_ID</label>
-                <span class="help" tabindex="0" data-tip="Username канала (@mychannel) или числовой id (-100...).">?</span>
-              </div>
-              <input id="channel_id" name="channel_id" value="{{ form.channel_id }}" placeholder="@channel or -100..." required>
             </div>
             <div>
               <div class="label-row">
