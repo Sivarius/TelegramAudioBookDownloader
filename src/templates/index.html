@@ -408,12 +408,95 @@
 
       <form method="post" action="/authorize">
         <div class="tab-row">
-          <button type="button" class="btn secondary compact tab-btn active" data-tab-target="tab-telegram">Telegram</button>
+          <button type="button" class="btn secondary compact tab-btn active" data-tab-target="tab-control">Пульт</button>
+          <button type="button" class="btn secondary compact tab-btn" data-tab-target="tab-telegram">Telegram</button>
           <button type="button" class="btn secondary compact tab-btn" data-tab-target="tab-sftp">SFTP</button>
           <button type="button" class="btn secondary compact tab-btn" data-tab-target="tab-ftps">FTPS</button>
         </div>
 
-        <div id="tab-telegram" class="tab-panel active">
+        <div id="tab-control" class="tab-panel active">
+          <div class="grid">
+            <div class="field-sm">
+              <div class="label-row">
+                <label>STARTUP_SCAN_LIMIT</label>
+                <span class="help" tabindex="0" data-tip="Сколько последних сообщений проверить при старте.">?</span>
+              </div>
+              <input name="startup_scan_limit" value="{{ form.startup_scan_limit }}">
+            </div>
+            <div class="field-sm">
+              <div class="label-row">
+                <label>Потоков загрузки</label>
+                <span class="help" tabindex="0" data-tip="Сколько аудиофайлов скачивать одновременно. Рекомендуется 2-4.">?</span>
+              </div>
+              <input name="download_concurrency" value="{{ form.download_concurrency }}" placeholder="3">
+            </div>
+            <div class="full">
+              <div class="check-row">
+                <input id="remember_me" type="checkbox" name="remember_me" {% if form.remember_me %}checked{% endif %}>
+                <label for="remember_me">Запомнить меня</label>
+              </div>
+            </div>
+            <div class="full">
+              <div class="check-row">
+                <input id="use_mtproxy" type="checkbox" name="use_mtproxy" {% if form.use_mtproxy %}checked{% endif %}>
+                <label for="use_mtproxy">Использовать mtproxy</label>
+              </div>
+            </div>
+            <div class="full">
+              <div class="check-row">
+                <input id="use_sftp" type="checkbox" name="use_sftp" {% if form.use_sftp %}checked{% endif %}>
+                <label for="use_sftp">Загружать на SFTP</label>
+              </div>
+            </div>
+            <div class="full">
+              <div class="check-row">
+                <input id="use_ftps" type="checkbox" name="use_ftps" {% if form.use_ftps %}checked{% endif %}>
+                <label for="use_ftps">Загружать на FTPS</label>
+              </div>
+            </div>
+            <div class="full">
+              <div class="check-row">
+                <input id="enable_periodic_checks" type="checkbox" name="enable_periodic_checks" {% if form.enable_periodic_checks %}checked{% endif %}>
+                <label for="enable_periodic_checks">Периодически проверять новые главы</label>
+              </div>
+            </div>
+            <div class="full">
+              <div class="index-inline">
+                <div class="field-sm">
+                  <div class="label-row">
+                    <label>С индекса</label>
+                    <span class="help" tabindex="0" data-tip="Начальный номер аудио из правого списка предпросмотра.">?</span>
+                  </div>
+                  <input id="from_index" name="from_index" value="{{ form.from_index }}" placeholder="1">
+                </div>
+                <div class="field-sm">
+                  <div class="label-row">
+                    <label>По индекс</label>
+                    <span class="help" tabindex="0" data-tip="Конечный номер аудио из правого списка предпросмотра.">?</span>
+                  </div>
+                  <input id="to_index" name="to_index" value="{{ form.to_index }}" placeholder="50">
+                </div>
+              </div>
+            </div>
+            <div class="full">
+              <div class="check-row">
+                <input id="download_new" type="checkbox" name="download_new" {% if form.download_new %}checked{% endif %}>
+                <label for="download_new">Скачать новые</label>
+              </div>
+            </div>
+          </div>
+          <div class="btn-row">
+            <button class="btn" formaction="/authorize" type="submit">Авторизоваться</button>
+            <button class="btn secondary" formaction="/check_sftp" type="submit">Проверить SFTP</button>
+            <button class="btn secondary" formaction="/check_ftps" type="submit">Проверить FTPS</button>
+            <button class="btn secondary" formaction="/preview" type="submit">Обновить предпросмотр</button>
+            <button class="btn" formaction="/start" type="submit">Начать скачивание</button>
+            <button class="btn secondary" formaction="/stop_download" type="submit">Прервать загрузку</button>
+            <button class="btn secondary" formaction="/stop_server" type="submit">Стоп сервер</button>
+          </div>
+        </div>
+
+        <div id="tab-telegram" class="tab-panel">
           <div class="check-row">
             <input id="show-telegram-settings" type="checkbox">
             <label for="show-telegram-settings">Показать/скрыть чувствительные поля</label>
@@ -493,7 +576,7 @@
             <label for="show-sftp-settings">Показать/скрыть host/login/port/password</label>
           </div>
           <div class="grid">
-            <div id="sftp-group" class="full {% if not form.use_sftp %}hidden{% endif %}">
+            <div id="sftp-group" class="full">
               <div class="grid">
                 <div>
                   <div class="label-row"><label>SFTP_HOST</label></div>
@@ -535,7 +618,7 @@
             <label for="show-ftps-settings">Показать/скрыть host/login/port/password</label>
           </div>
           <div class="grid">
-            <div id="ftps-group" class="full {% if not form.use_ftps %}hidden{% endif %}">
+            <div id="ftps-group" class="full">
               <div class="grid">
                 <div>
                   <div class="label-row"><label>FTPS_HOST</label></div>
@@ -571,86 +654,6 @@
           </div>
         </div>
 
-        <div class="grid" style="margin-top: 12px;">
-          <div class="field-sm">
-            <div class="label-row">
-              <label>STARTUP_SCAN_LIMIT</label>
-              <span class="help" tabindex="0" data-tip="Сколько последних сообщений проверить при старте.">?</span>
-            </div>
-            <input name="startup_scan_limit" value="{{ form.startup_scan_limit }}">
-          </div>
-          <div class="field-sm">
-            <div class="label-row">
-              <label>Потоков загрузки</label>
-              <span class="help" tabindex="0" data-tip="Сколько аудиофайлов скачивать одновременно. Рекомендуется 2-4.">?</span>
-            </div>
-            <input name="download_concurrency" value="{{ form.download_concurrency }}" placeholder="3">
-          </div>
-          <div class="full">
-            <div class="check-row">
-              <input id="remember_me" type="checkbox" name="remember_me" {% if form.remember_me %}checked{% endif %}>
-              <label for="remember_me">Запомнить меня</label>
-            </div>
-          </div>
-          <div class="full">
-            <div class="check-row">
-              <input id="use_mtproxy" type="checkbox" name="use_mtproxy" {% if form.use_mtproxy %}checked{% endif %}>
-              <label for="use_mtproxy">Использовать mtproxy</label>
-            </div>
-          </div>
-          <div class="full">
-            <div class="check-row">
-              <input id="use_sftp" type="checkbox" name="use_sftp" {% if form.use_sftp %}checked{% endif %}>
-              <label for="use_sftp">Загружать на SFTP</label>
-            </div>
-          </div>
-          <div class="full">
-            <div class="check-row">
-              <input id="use_ftps" type="checkbox" name="use_ftps" {% if form.use_ftps %}checked{% endif %}>
-              <label for="use_ftps">Загружать на FTPS</label>
-            </div>
-          </div>
-          <div class="full">
-            <div class="check-row">
-              <input id="enable_periodic_checks" type="checkbox" name="enable_periodic_checks" {% if form.enable_periodic_checks %}checked{% endif %}>
-              <label for="enable_periodic_checks">Периодически проверять новые главы</label>
-            </div>
-          </div>
-          <div class="full">
-            <div class="index-inline">
-              <div class="field-sm">
-                <div class="label-row">
-                  <label>С индекса</label>
-                  <span class="help" tabindex="0" data-tip="Начальный номер аудио из правого списка предпросмотра.">?</span>
-                </div>
-                <input id="from_index" name="from_index" value="{{ form.from_index }}" placeholder="1">
-              </div>
-              <div class="field-sm">
-                <div class="label-row">
-                  <label>По индекс</label>
-                  <span class="help" tabindex="0" data-tip="Конечный номер аудио из правого списка предпросмотра.">?</span>
-                </div>
-                <input id="to_index" name="to_index" value="{{ form.to_index }}" placeholder="50">
-              </div>
-            </div>
-          </div>
-          <div class="full">
-            <div class="check-row">
-              <input id="download_new" type="checkbox" name="download_new" {% if form.download_new %}checked{% endif %}>
-              <label for="download_new">Скачать новые</label>
-            </div>
-          </div>
-        </div>
-
-        <div class="btn-row">
-          <button class="btn" formaction="/authorize" type="submit">Авторизоваться</button>
-          <button class="btn secondary" formaction="/check_sftp" type="submit">Проверить SFTP</button>
-          <button class="btn secondary" formaction="/check_ftps" type="submit">Проверить FTPS</button>
-          <button class="btn secondary" formaction="/preview" type="submit">Обновить предпросмотр</button>
-          <button class="btn" formaction="/start" type="submit">Начать скачивание</button>
-          <button class="btn secondary" formaction="/stop_download" type="submit">Прервать загрузку</button>
-          <button class="btn secondary" formaction="/stop_server" type="submit">Стоп сервер</button>
-        </div>
       </form>
 
       <div class="status">
@@ -928,7 +931,7 @@
     document.querySelectorAll('.tab-btn').forEach((btn) => {
       btn.addEventListener('click', () => activateTab(btn.getAttribute('data-tab-target')));
     });
-    activateTab('tab-telegram');
+    activateTab('tab-control');
 
     function bindRevealToggle(toggleId, selector) {
       const toggle = document.getElementById(toggleId);
@@ -958,48 +961,19 @@
     document.getElementById('use_mtproxy').addEventListener('change', toggleMtproxyField);
     toggleMtproxyField();
 
-    function toggleSftpField() {
-      const useSftp = document.getElementById('use_sftp').checked;
-      const group = document.getElementById('sftp-group');
-      if (useSftp) {
-        group.classList.remove('hidden');
-      } else {
-        group.classList.add('hidden');
-      }
-    }
-
-    document.getElementById('use_sftp').addEventListener('change', toggleSftpField);
-    toggleSftpField();
-
-    function toggleFtpsField() {
-      const useFtps = document.getElementById('use_ftps').checked;
-      const group = document.getElementById('ftps-group');
-      if (useFtps) {
-        group.classList.remove('hidden');
-      } else {
-        group.classList.add('hidden');
-      }
-    }
-
-    document.getElementById('use_ftps').addEventListener('change', toggleFtpsField);
-    toggleFtpsField();
-
     // Allow only one remote upload protocol at a time.
     document.getElementById('use_sftp').addEventListener('change', (e) => {
       if (e.target.checked) {
         document.getElementById('use_ftps').checked = false;
-        toggleFtpsField();
       }
     });
     document.getElementById('use_ftps').addEventListener('change', (e) => {
       if (e.target.checked) {
         document.getElementById('use_sftp').checked = false;
-        toggleSftpField();
       }
     });
     if (document.getElementById('use_sftp').checked && document.getElementById('use_ftps').checked) {
       document.getElementById('use_ftps').checked = false;
-      toggleFtpsField();
     }
 
     async function loadChannelMenu() {
