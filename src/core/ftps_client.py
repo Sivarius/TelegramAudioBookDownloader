@@ -12,6 +12,25 @@ from core.models import Settings
 FTPS_TIMEOUT_SECONDS = 30
 
 
+class ImplicitFTP_TLS(FTP_TLS):
+    """Minimal implicit FTPS client (TLS starts on connect)."""
+
+    def connect(self, host: str = "", port: int = 0) -> str:
+        if host:
+            self.host = host
+        if port:
+            self.port = port
+        self.sock = socket.create_connection(
+            (self.host, self.port),
+            timeout=self.timeout,
+        )
+        self.af = self.sock.family
+        self.sock = self.context.wrap_socket(self.sock, server_hostname=self.host)
+        self.file = self.sock.makefile("r", encoding=self.encoding)
+        self.welcome = self.getresp()
+        return self.welcome
+
+
 class FTPSSync:
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
@@ -45,13 +64,16 @@ class FTPSSync:
             context = ssl.create_default_context()
         else:
             context = ssl._create_unverified_context()
-        ftps = FTP_TLS(context=context, timeout=FTPS_TIMEOUT_SECONDS)
+        if self.settings.ftps_security_mode == "implicit":
+            ftps: FTP_TLS = ImplicitFTP_TLS(context=context, timeout=FTPS_TIMEOUT_SECONDS)
+        else:
+            ftps = FTP_TLS(context=context, timeout=FTPS_TIMEOUT_SECONDS)
         ftps.connect(host=self.settings.ftps_host, port=self.settings.ftps_port)
         if ftps.sock is not None:
             ftps.sock.settimeout(FTPS_TIMEOUT_SECONDS)
         ftps.login(user=self.settings.ftps_username, passwd=self.settings.ftps_password or "")
         ftps.prot_p()
-        ftps.set_pasv(True)
+        ftps.set_pasv(bool(self.settings.ftps_passive_mode))
         self._ftps = ftps
 
     def close(self) -> None:
@@ -74,7 +96,14 @@ class FTPSSync:
             base_remote = (self.settings.ftps_remote_dir or "/").strip() or "/"
             self.ensure_remote_dir(base_remote)
             tls_mode = "verify=on" if self.settings.ftps_verify_tls else "verify=off"
-            return True, f"FTPS: подключение установлено ({tls_mode}). Каталог доступен: {base_remote}"
+            transfer_mode = "passive" if self.settings.ftps_passive_mode else "active"
+            secure_mode = self.settings.ftps_security_mode
+            return (
+                True,
+                "FTPS: подключение установлено "
+                f"({tls_mode}; mode={transfer_mode}; security={secure_mode}). "
+                f"Каталог доступен: {base_remote}",
+            )
         except ssl.SSLCertVerificationError as exc:
             return (
                 False,

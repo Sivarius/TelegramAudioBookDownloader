@@ -143,6 +143,10 @@ def load_settings(db: AppDatabase) -> Settings:
     ftps_password = _env_or_db("FTPS_PASSWORD", db)
     ftps_remote_dir = _env_or_db("FTPS_REMOTE_DIR", db) or "/uploads"
     ftps_verify_tls = _to_bool(_env_or_db("FTPS_VERIFY_TLS", db) or "1")
+    ftps_passive_mode = _to_bool(_env_or_db("FTPS_PASSIVE_MODE", db) or "1")
+    ftps_security_mode = (_env_or_db("FTPS_SECURITY_MODE", db) or "explicit").strip().lower()
+    if ftps_security_mode not in {"explicit", "implicit"}:
+        ftps_security_mode = "explicit"
     cleanup_local_after_ftps = _to_bool(
         _env_or_db("CLEANUP_LOCAL_AFTER_FTPS", db) or "0"
     )
@@ -182,5 +186,7 @@ def load_settings(db: AppDatabase) -> Settings:
         ftps_password=ftps_password,
         ftps_remote_dir=ftps_remote_dir,
         ftps_verify_tls=ftps_verify_tls,
+        ftps_passive_mode=ftps_passive_mode,
+        ftps_security_mode=ftps_security_mode,
         cleanup_local_after_ftps=cleanup_local_after_ftps,
     )

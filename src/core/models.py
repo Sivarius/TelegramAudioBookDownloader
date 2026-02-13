@@ -28,4 +28,6 @@ class Settings:
     ftps_password: str
     ftps_remote_dir: str
     ftps_verify_tls: bool
+    ftps_passive_mode: bool
+    ftps_security_mode: str
     cleanup_local_after_ftps: bool

@@ -123,6 +123,8 @@ class AppDatabase:
         self.set_setting("FTPS_PASSWORD", settings.ftps_password)
         self.set_setting("FTPS_REMOTE_DIR", settings.ftps_remote_dir)
         self.set_setting("FTPS_VERIFY_TLS", "1" if settings.ftps_verify_tls else "0")
+        self.set_setting("FTPS_PASSIVE_MODE", "1" if settings.ftps_passive_mode else "0")
+        self.set_setting("FTPS_SECURITY_MODE", settings.ftps_security_mode)
         self.set_setting(
             "CLEANUP_LOCAL_AFTER_FTPS",
             "1" if settings.cleanup_local_after_ftps else "0",

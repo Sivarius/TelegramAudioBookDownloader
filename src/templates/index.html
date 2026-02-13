@@ -137,7 +137,8 @@
     .help:focus::after {
       display: block;
     }
-    input {
+    input,
+    select {
       width: 100%;
       border: 1px solid var(--line);
       border-radius: 8px;
@@ -632,6 +633,22 @@
                     <span class="help" tabindex="0" data-tip="Базовый удалённый каталог. Внутри него автоматически создаётся подпапка с названием книги (канала).">?</span>
                   </div>
                   <input name="ftps_remote_dir" value="{{ form.ftps_remote_dir }}" placeholder="/uploads/books">
+                </div>
+                <div>
+                  <div class="label-row">
+                    <label>Безопасный режим FTPS</label>
+                    <span class="help" tabindex="0" data-tip="Явный (explicit) - стандартный FTPS на 21 порту. Неявный (implicit) - TLS сразу при подключении, чаще на 990 порту.">?</span>
+                  </div>
+                  <select name="ftps_security_mode">
+                    <option value="explicit" {% if form.ftps_security_mode != 'implicit' %}selected{% endif %}>Явный (explicit)</option>
+                    <option value="implicit" {% if form.ftps_security_mode == 'implicit' %}selected{% endif %}>Неявный (implicit)</option>
+                  </select>
+                </div>
+                <div>
+                  <div class="check-row">
+                    <input id="ftps_passive_mode" type="checkbox" name="ftps_passive_mode" {% if form.ftps_passive_mode %}checked{% endif %}>
+                    <label for="ftps_passive_mode">Режим передачи: пассивный</label>
+                  </div>
                 </div>
                 <div class="full">
                   <div class="check-row">

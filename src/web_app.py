@@ -231,6 +231,8 @@ def _load_saved_form() -> dict:
             "ftps_password": db.get_setting("FTPS_PASSWORD") or "",
             "ftps_remote_dir": db.get_setting("FTPS_REMOTE_DIR") or "/uploads",
             "ftps_verify_tls": (db.get_setting("FTPS_VERIFY_TLS") or "1") == "1",
+            "ftps_passive_mode": (db.get_setting("FTPS_PASSIVE_MODE") or "1") == "1",
+            "ftps_security_mode": db.get_setting("FTPS_SECURITY_MODE") or "explicit",
             "cleanup_local_after_ftps": (db.get_setting("CLEANUP_LOCAL_AFTER_FTPS") or "0") == "1",
             "download_new": False,
             "remember_me": (db.get_setting("REMEMBER_ME") or "1") != "0",
@@ -271,6 +273,8 @@ def _form_from_request() -> dict:
         "ftps_password": request.form.get("ftps_password", saved["ftps_password"]).strip(),
         "ftps_remote_dir": request.form.get("ftps_remote_dir", saved["ftps_remote_dir"]).strip(),
         "ftps_verify_tls": request.form.get("ftps_verify_tls") == "on",
+        "ftps_passive_mode": request.form.get("ftps_passive_mode") == "on",
+        "ftps_security_mode": request.form.get("ftps_security_mode", saved["ftps_security_mode"]).strip().lower(),
         "cleanup_local_after_ftps": request.form.get("cleanup_local_after_ftps") == "on",
         "download_new": request.form.get("download_new") == "on",
         "remember_me": request.form.get("remember_me") == "on",
@@ -308,6 +312,7 @@ def _build_settings(form: dict, require_channel: bool = True) -> Settings:
     ftps_port = _safe_int(form["ftps_port"], 21)
     if ftps_port <= 0:
         ftps_port = 21
+    ftps_security_mode = form["ftps_security_mode"] if form["ftps_security_mode"] in {"explicit", "implicit"} else "explicit"
     if form["use_ftps"] and (not form["ftps_host"] or not form["ftps_username"]):
         raise ValueError("Для FTPS заполните host и username.")
     if form["use_sftp"] and form["use_ftps"]:
@@ -338,6 +343,8 @@ def _build_settings(form: dict, require_channel: bool = True) -> Settings:
         ftps_password=form["ftps_password"],
         ftps_remote_dir=form["ftps_remote_dir"] or "/uploads",
         ftps_verify_tls=bool(form["ftps_verify_tls"]),
+        ftps_passive_mode=bool(form["ftps_passive_mode"]),
+        ftps_security_mode=ftps_security_mode,
         cleanup_local_after_ftps=bool(form["cleanup_local_after_ftps"]),
     )
 
