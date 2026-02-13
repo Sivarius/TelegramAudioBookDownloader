@@ -1,0 +1,12 @@
+__pycache__/
+*.pyc
+.env
+*.session
+*.session-journal
+*.session-wal
+*.session-shm
+downloads/
+bot_data.sqlite3
+*.sqlite3
+.venv/
+.vscode/

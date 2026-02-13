@@ -1,0 +1,281 @@
+import asyncio
+import logging
+from pathlib import Path
+from typing import Callable, Optional
+
+from telethon import events, utils
+from telethon.errors import FloodWaitError
+from telethon.tl.custom.message import Message
+
+from core.config import sanitize_folder_name
+from core.db import AppDatabase
+from core.models import Settings
+from core.telegram_client import create_telegram_client, is_audio_message, resolve_channel_entity
+
+
+async def download_if_needed(
+    message: Message,
+    db: AppDatabase,
+    download_dir: Path,
+    status_hook: Optional[Callable[[dict], None]] = None,
+    channel_ref: str = "",
+    channel_title: str = "",
+) -> None:
+    channel_id = message.chat_id
+    if channel_id is None:
+        return
+
+    if db.already_downloaded(channel_id, message.id):
+        if status_hook:
+            status_hook({"event": "skipped", "message_id": message.id, "reason": "already_downloaded"})
+        return
+
+    if not is_audio_message(message):
+        if status_hook:
+            status_hook({"event": "skipped", "message_id": message.id, "reason": "not_audio"})
+        return
+
+    download_dir.mkdir(parents=True, exist_ok=True)
+
+    try:
+        if status_hook:
+            status_hook({"event": "downloading", "message_id": message.id})
+        file_path = await message.download_media(file=download_dir)
+        if file_path is None:
+            logging.warning("Audio detected but no file downloaded for message_id=%s", message.id)
+            if status_hook:
+                status_hook({"event": "failed", "message_id": message.id, "reason": "empty_file_path"})
+            return
+
+        db.mark_downloaded(channel_id, message.id, str(file_path))
+        db.update_channel_state(
+            channel_id=channel_id,
+            channel_ref=channel_ref,
+            channel_title=channel_title,
+            download_folder=str(download_dir),
+            last_message_id=message.id,
+            last_file_path=str(file_path),
+        )
+        logging.info("Downloaded message_id=%s to %s", message.id, file_path)
+        if status_hook:
+            status_hook({"event": "downloaded", "message_id": message.id, "file_path": str(file_path)})
+    except FloodWaitError:
+        raise
+    except Exception:
+        logging.exception("Failed to download message_id=%s", message.id)
+        if status_hook:
+            status_hook({"event": "failed", "message_id": message.id, "reason": "exception"})
+
+
+async def initial_backfill(
+    client,
+    db: AppDatabase,
+    channel,
+    download_dir: Path,
+    limit: int,
+    allowed_message_ids: Optional[set[int]] = None,
+    status_hook: Optional[Callable[[dict], None]] = None,
+    min_id: int = 0,
+    channel_ref: str = "",
+    channel_title: str = "",
+    stop_requested: Optional[Callable[[], bool]] = None,
+    concurrency: int = 1,
+) -> None:
+    if limit == 0:
+        return
+
+    if min_id > 0:
+        logging.info("Resuming channel from message_id > %s", min_id)
+        iterator = client.iter_messages(channel, min_id=min_id, reverse=True, limit=None)
+    else:
+        logging.info("Startup scan: reading last %s messages...", limit)
+        iterator = client.iter_messages(channel, limit=limit, reverse=True)
+
+    concurrency_value = max(1, concurrency)
+    semaphore = asyncio.Semaphore(concurrency_value)
+    tasks: set[asyncio.Task] = set()
+
+    async def _process_message(message: Message) -> None:
+        nonlocal concurrency_value, semaphore
+        while True:
+            async with semaphore:
+                try:
+                    await download_if_needed(
+                        message,
+                        db,
+                        download_dir,
+                        status_hook=status_hook,
+                        channel_ref=channel_ref,
+                        channel_title=channel_title,
+                    )
+                    return
+                except FloodWaitError as flood:
+                    wait_seconds = max(1, int(getattr(flood, "seconds", 1)))
+                    if concurrency_value > 1:
+                        concurrency_value -= 1
+                        semaphore = asyncio.Semaphore(max(1, concurrency_value))
+                    if status_hook:
+                        status_hook(
+                            {
+                                "event": "throttled",
+                                "message_id": message.id,
+                                "seconds": wait_seconds,
+                                "concurrency": max(1, concurrency_value),
+                            }
+                        )
+                    logging.warning(
+                        "FloodWait %ss during backfill message_id=%s, concurrency=%s",
+                        wait_seconds,
+                        message.id,
+                        max(1, concurrency_value),
+                    )
+            await asyncio.sleep(wait_seconds)
+            if stop_requested and stop_requested():
+                return
+
+    async for message in iterator:
+        if stop_requested and stop_requested():
+            logging.info("Backfill interrupted by stop signal.")
+            break
+        if allowed_message_ids is not None and message.id not in allowed_message_ids:
+            continue
+
+        task = asyncio.create_task(_process_message(message))
+        tasks.add(task)
+        task.add_done_callback(tasks.discard)
+
+        if len(tasks) >= max(4, concurrency_value * 4):
+            done, _ = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+            for finished in done:
+                exc = finished.exception()
+                if exc:
+                    logging.exception("Backfill task failed: %s", exc)
+
+    if tasks:
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+        for item in results:
+            if isinstance(item, Exception):
+                logging.exception("Backfill task failed: %s", item)
+
+    logging.info("Startup scan complete")
+
+
+async def run_downloader(
+    settings: Settings,
+    db_path: Path,
+    allowed_message_ids: Optional[set[int]] = None,
+    status_hook: Optional[Callable[[dict], None]] = None,
+    stop_requested: Optional[Callable[[], bool]] = None,
+) -> None:
+    db = AppDatabase(db_path)
+    try:
+        settings.download_dir.mkdir(parents=True, exist_ok=True)
+        db.store_settings(settings)
+
+        client = create_telegram_client(settings)
+        await client.start(phone=settings.phone)
+
+        try:
+            channel = await resolve_channel_entity(client, settings.channel)
+        except Exception as exc:
+            raise RuntimeError(
+                "Cannot resolve CHANNEL_ID. Check configured channel and account access."
+            ) from exc
+
+        logging.info("Connected. Watching channel: %s", settings.channel)
+        channel_marked_id = utils.get_peer_id(channel)
+        channel_title = getattr(channel, "title", settings.channel)
+        channel_folder = sanitize_folder_name(channel_title)
+        effective_download_dir = settings.download_dir / channel_folder
+        effective_download_dir.mkdir(parents=True, exist_ok=True)
+
+        last_downloaded_id = 0
+        if allowed_message_ids is None:
+            last_downloaded_id = db.get_last_downloaded_message_id(channel_marked_id)
+            if last_downloaded_id > 0:
+                logging.info(
+                    "Found previous progress for channel_id=%s last_message_id=%s",
+                    channel_marked_id,
+                    last_downloaded_id,
+                )
+
+        await initial_backfill(
+            client=client,
+            db=db,
+            channel=channel,
+            download_dir=effective_download_dir,
+            limit=settings.startup_scan_limit,
+            allowed_message_ids=allowed_message_ids,
+            status_hook=status_hook,
+            min_id=last_downloaded_id,
+            channel_ref=settings.channel,
+            channel_title=channel_title,
+            stop_requested=stop_requested,
+            concurrency=settings.download_concurrency,
+        )
+
+        live_concurrency = max(1, settings.download_concurrency)
+        download_semaphore = asyncio.Semaphore(live_concurrency)
+        live_tasks: set[asyncio.Task] = set()
+
+        async def _process_live_message(message: Message) -> None:
+            nonlocal download_semaphore, live_concurrency
+            while True:
+                async with download_semaphore:
+                    try:
+                        await download_if_needed(
+                            message,
+                            db,
+                            effective_download_dir,
+                            status_hook=status_hook,
+                            channel_ref=settings.channel,
+                            channel_title=channel_title,
+                        )
+                        return
+                    except FloodWaitError as flood:
+                        wait_seconds = max(1, int(getattr(flood, "seconds", 1)))
+                        if live_concurrency > 1:
+                            live_concurrency -= 1
+                            download_semaphore = asyncio.Semaphore(max(1, live_concurrency))
+                        if status_hook:
+                            status_hook(
+                                {
+                                    "event": "throttled",
+                                    "message_id": message.id,
+                                    "seconds": wait_seconds,
+                                    "concurrency": live_concurrency,
+                                }
+                            )
+                        logging.warning(
+                            "FloodWait %ss in live mode message_id=%s, concurrency=%s",
+                            wait_seconds,
+                            message.id,
+                            live_concurrency,
+                        )
+                await asyncio.sleep(wait_seconds)
+                if stop_requested and stop_requested():
+                    return
+
+        @client.on(events.NewMessage(chats=channel))
+        async def on_new_message(event: events.NewMessage.Event) -> None:
+            task = asyncio.create_task(_process_live_message(event.message))
+            live_tasks.add(task)
+            task.add_done_callback(live_tasks.discard)
+
+        logging.info("Listener started. Waiting for new audio files...")
+        listener_task = asyncio.create_task(client.run_until_disconnected())
+        try:
+            while not listener_task.done():
+                if stop_requested and stop_requested():
+                    logging.info("Stop signal received. Disconnecting Telegram client...")
+                    await client.disconnect()
+                    break
+                await asyncio.sleep(0.5)
+            await listener_task
+            if live_tasks:
+                await asyncio.gather(*live_tasks, return_exceptions=True)
+        finally:
+            if not listener_task.done():
+                listener_task.cancel()
+    finally:
+        db.close()
