@@ -162,6 +162,27 @@
       flex-wrap: wrap;
       margin-top: 12px;
     }
+    .tab-row {
+      display: flex;
+      gap: 8px;
+      margin-bottom: 10px;
+      flex-wrap: wrap;
+    }
+    .tab-btn.active {
+      background: var(--primary);
+      color: #fff;
+    }
+    .tab-panel {
+      display: none;
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      padding: 10px;
+      background: var(--status-bg);
+      margin-bottom: 10px;
+    }
+    .tab-panel.active {
+      display: block;
+    }
     .menu-box {
       margin-top: 12px;
       border: 1px solid var(--line);
@@ -334,6 +355,15 @@
       font-size: 12px;
       color: var(--muted);
     }
+    .downloaded-ok {
+      color: var(--ok);
+      font-weight: 700;
+      font-size: 16px;
+      line-height: 1;
+    }
+    .downloaded-empty {
+      color: var(--muted);
+    }
     @media (max-width: 980px) {
       .wrap {
         grid-template-columns: 1fr;
@@ -377,177 +407,171 @@
       </div>
 
       <form method="post" action="/authorize">
-        <div class="grid">
-          <div>
-            <div class="label-row">
-              <label>API_ID</label>
-              <span class="help" tabindex="0" data-tip="Числовой ID приложения Telegram API.">?</span>
-              <a class="inline-link" href="https://my.telegram.org/apps" target="_blank" rel="noopener noreferrer">Получить</a>
-            </div>
-            <input type="password" name="api_id" value="{{ form.api_id }}" required>
+        <div class="tab-row">
+          <button type="button" class="btn secondary compact tab-btn active" data-tab-target="tab-telegram">Telegram</button>
+          <button type="button" class="btn secondary compact tab-btn" data-tab-target="tab-sftp">SFTP</button>
+          <button type="button" class="btn secondary compact tab-btn" data-tab-target="tab-ftps">FTPS</button>
+        </div>
+
+        <div id="tab-telegram" class="tab-panel active">
+          <div class="check-row">
+            <input id="show-telegram-settings" type="checkbox">
+            <label for="show-telegram-settings">Показать/скрыть чувствительные поля</label>
           </div>
-          <div>
-            <div class="label-row">
-              <label>API_HASH</label>
-              <span class="help" tabindex="0" data-tip="Секретный hash приложения Telegram API.">?</span>
-              <a class="inline-link" href="https://my.telegram.org/apps" target="_blank" rel="noopener noreferrer">Получить</a>
-            </div>
-            <input type="password" name="api_hash" value="{{ form.api_hash }}" required>
-          </div>
-          <div>
-            <div class="label-row">
-              <label>PHONE</label>
-              <span class="help" tabindex="0" data-tip="Номер Telegram-аккаунта в международном формате, например +79990001122.">?</span>
-            </div>
-            <input name="phone" value="{{ form.phone }}" placeholder="+79990001122" required>
-          </div>
-          <div>
-            <div class="label-row">
-              <label>CHANNEL_ID</label>
-              <span class="help" tabindex="0" data-tip="Username канала (@mychannel) или числовой id (-100...).">?</span>
-            </div>
-            <input id="channel_id" name="channel_id" value="{{ form.channel_id }}" placeholder="@channel or -100..." required>
-          </div>
-          <div class="full">
-            <div class="check-row">
-              <input id="use_mtproxy" type="checkbox" name="use_mtproxy" {% if form.use_mtproxy %}checked{% endif %}>
-              <label for="use_mtproxy">Использовать mtproxy</label>
-              <span class="help" tabindex="0" data-tip="Если включено, подключение к Telegram пойдет через MTProxy.">?</span>
-            </div>
-          </div>
-          <div class="full">
-            <div class="check-row">
-              <input id="remember_me" type="checkbox" name="remember_me" {% if form.remember_me %}checked{% endif %}>
-              <label for="remember_me">Запомнить меня</label>
-              <span class="help" tabindex="0" data-tip="Сохраняет Telegram-сессию, чтобы не проходить авторизацию заново.">?</span>
-            </div>
-          </div>
-          <div class="full">
-            <div class="check-row">
-              <input id="enable_periodic_checks" type="checkbox" name="enable_periodic_checks" {% if form.enable_periodic_checks %}checked{% endif %}>
-              <label for="enable_periodic_checks">Периодически проверять новые главы</label>
-              <span class="help" tabindex="0" data-tip="По умолчанию выключено. Включите, если нужна фоновая проверка каналов по интервалу.">?</span>
-            </div>
-          </div>
-          <div id="mtproxy-group" class="full {% if not form.use_mtproxy %}hidden{% endif %}">
-            <div class="label-row">
-              <label>Ссылка/строка MTProxy</label>
-              <span class="help" tabindex="0" data-tip="Вставьте строку целиком, например: server=example.com&port=443&secret=...">?</span>
-            </div>
-            <input type="password" name="mtproxy_link" value="{{ form.mtproxy_link }}" placeholder="server=example.com&port=443&secret=...">
-          </div>
-          <div class="full">
-            <div class="check-row">
-              <input id="use_sftp" type="checkbox" name="use_sftp" {% if form.use_sftp %}checked{% endif %}>
-              <label for="use_sftp">Загружать на SFTP</label>
-              <span class="help" tabindex="0" data-tip="Если включено, после скачивания главы будут загружаться в удалённый каталог по SFTP.">?</span>
-            </div>
-          </div>
-          <div id="sftp-group" class="full {% if not form.use_sftp %}hidden{% endif %}">
-            <div class="grid">
-              <div>
-                <div class="label-row">
-                  <label>SFTP_HOST</label>
-                </div>
-                <input type="password" name="sftp_host" value="{{ form.sftp_host }}" placeholder="sftp.example.com">
+          <div class="grid">
+            <div>
+              <div class="label-row">
+                <label>API_ID</label>
+                <span class="help" tabindex="0" data-tip="Числовой ID приложения Telegram API.">?</span>
+                <a class="inline-link" href="https://my.telegram.org/apps" target="_blank" rel="noopener noreferrer">Получить</a>
               </div>
-              <div>
-                <div class="label-row">
-                  <label>SFTP_PORT</label>
-                </div>
-                <input type="password" name="sftp_port" value="{{ form.sftp_port }}" placeholder="22">
+              <input class="tg-secret" type="password" name="api_id" value="{{ form.api_id }}" required>
+            </div>
+            <div>
+              <div class="label-row">
+                <label>API_HASH</label>
+                <span class="help" tabindex="0" data-tip="Секретный hash приложения Telegram API.">?</span>
+                <a class="inline-link" href="https://my.telegram.org/apps" target="_blank" rel="noopener noreferrer">Получить</a>
               </div>
-              <div>
-                <div class="label-row">
-                  <label>SFTP_USERNAME</label>
-                </div>
-                <input type="password" name="sftp_username" value="{{ form.sftp_username }}" placeholder="username">
+              <input class="tg-secret" type="password" name="api_hash" value="{{ form.api_hash }}" required>
+            </div>
+            <div>
+              <div class="label-row">
+                <label>PHONE</label>
+                <span class="help" tabindex="0" data-tip="Номер Telegram-аккаунта в международном формате, например +79990001122.">?</span>
               </div>
-              <div>
-                <div class="label-row">
-                  <label>SFTP_PASSWORD</label>
-                </div>
-                <input type="password" name="sftp_password" value="{{ form.sftp_password }}" placeholder="password">
+              <input class="tg-secret" type="password" name="phone" value="{{ form.phone }}" placeholder="+79990001122" required>
+            </div>
+            <div>
+              <div class="label-row">
+                <label>CHANNEL_ID</label>
+                <span class="help" tabindex="0" data-tip="Username канала (@mychannel) или числовой id (-100...).">?</span>
               </div>
-              <div class="full">
-                <div class="label-row">
-                  <label>SFTP_REMOTE_DIR</label>
-                  <span class="help" tabindex="0" data-tip="Базовый удалённый каталог. Внутри него автоматически создаётся подпапка с названием книги (канала).">?</span>
-                </div>
-                <input name="sftp_remote_dir" value="{{ form.sftp_remote_dir }}" placeholder="/uploads/books">
+              <input id="channel_id" name="channel_id" value="{{ form.channel_id }}" placeholder="@channel or -100..." required>
+            </div>
+            <div>
+              <div class="label-row">
+                <label>Код из Telegram (если запросили)</label>
+                <span class="help" tabindex="0" data-tip="Одноразовый код подтверждения, который Telegram присылает при входе.">?</span>
               </div>
-              <div class="full">
-                <div class="check-row">
-                  <input id="cleanup_local_after_sftp" type="checkbox" name="cleanup_local_after_sftp" {% if form.cleanup_local_after_sftp %}checked{% endif %}>
-                  <label for="cleanup_local_after_sftp">Удалять локальный файл после подтверждённой загрузки на SFTP</label>
-                  <span class="help" tabindex="0" data-tip="Удаление происходит только после проверки размера и SHA-256 хэша удалённого файла.">?</span>
-                </div>
+              <input class="tg-secret" type="password" name="code" value="{{ form.code }}" placeholder="12345">
+            </div>
+            <div>
+              <div class="label-row">
+                <label>Пароль 2FA (если включен)</label>
+                <span class="help" tabindex="0" data-tip="Пароль облачного 2FA, если включена двухфакторная защита.">?</span>
               </div>
+              <input class="tg-secret" type="password" name="password" value="{{ form.password }}" placeholder="Пароль 2FA">
+            </div>
+            <div id="mtproxy-group" class="full {% if not form.use_mtproxy %}hidden{% endif %}">
+              <div class="label-row">
+                <label>Ссылка/строка MTProxy</label>
+                <span class="help" tabindex="0" data-tip="Вставьте строку целиком, например: server=example.com&port=443&secret=...">?</span>
+              </div>
+              <input class="tg-secret" type="password" name="mtproxy_link" value="{{ form.mtproxy_link }}" placeholder="server=example.com&port=443&secret=...">
+            </div>
+            <div>
+              <div class="label-row">
+                <label>SESSION_NAME</label>
+                <span class="help" tabindex="0" data-tip="Имя файла сессии Telethon для сохранения авторизации.">?</span>
+              </div>
+              <input class="tg-secret" type="password" name="session_name" value="{{ form.session_name }}">
+            </div>
+            <div class="full">
+              <div class="label-row">
+                <label>Путь сохранения аудио</label>
+                <span class="help" tabindex="0" data-tip="Базовая локальная папка. Внутри неё бот автоматически создаст подпапку с названием канала.">?</span>
+              </div>
+              <input name="download_dir" value="{{ form.download_dir }}">
             </div>
           </div>
-          <div class="full">
-            <div class="check-row">
-              <input id="use_ftps" type="checkbox" name="use_ftps" {% if form.use_ftps %}checked{% endif %}>
-              <label for="use_ftps">Загружать на FTPS</label>
-              <span class="help" tabindex="0" data-tip="Если включено, после скачивания главы будут загружаться в удалённый каталог по FTPS (FTP over TLS).">?</span>
-            </div>
+        </div>
+
+        <div id="tab-sftp" class="tab-panel">
+          <div class="check-row">
+            <input id="show-sftp-settings" type="checkbox">
+            <label for="show-sftp-settings">Показать/скрыть host/login/port/password</label>
           </div>
-          <div id="ftps-group" class="full {% if not form.use_ftps %}hidden{% endif %}">
-            <div class="grid">
-              <div>
-                <div class="label-row">
-                  <label>FTPS_HOST</label>
+          <div class="grid">
+            <div id="sftp-group" class="full {% if not form.use_sftp %}hidden{% endif %}">
+              <div class="grid">
+                <div>
+                  <div class="label-row"><label>SFTP_HOST</label></div>
+                  <input class="sftp-secret" type="password" name="sftp_host" value="{{ form.sftp_host }}" placeholder="sftp.example.com">
                 </div>
-                <input type="password" name="ftps_host" value="{{ form.ftps_host }}" placeholder="ftps.example.com">
-              </div>
-              <div>
-                <div class="label-row">
-                  <label>FTPS_PORT</label>
+                <div>
+                  <div class="label-row"><label>SFTP_PORT</label></div>
+                  <input class="sftp-secret" type="password" name="sftp_port" value="{{ form.sftp_port }}" placeholder="22">
                 </div>
-                <input type="password" name="ftps_port" value="{{ form.ftps_port }}" placeholder="21">
-              </div>
-              <div>
-                <div class="label-row">
-                  <label>FTPS_USERNAME</label>
+                <div>
+                  <div class="label-row"><label>SFTP_USERNAME</label></div>
+                  <input class="sftp-secret" type="password" name="sftp_username" value="{{ form.sftp_username }}" placeholder="username">
                 </div>
-                <input type="password" name="ftps_username" value="{{ form.ftps_username }}" placeholder="username">
-              </div>
-              <div>
-                <div class="label-row">
-                  <label>FTPS_PASSWORD</label>
+                <div>
+                  <div class="label-row"><label>SFTP_PASSWORD</label></div>
+                  <input class="sftp-secret" type="password" name="sftp_password" value="{{ form.sftp_password }}" placeholder="password">
                 </div>
-                <input type="password" name="ftps_password" value="{{ form.ftps_password }}" placeholder="password">
-              </div>
-              <div class="full">
-                <div class="label-row">
-                  <label>FTPS_REMOTE_DIR</label>
-                  <span class="help" tabindex="0" data-tip="Базовый удалённый каталог. Внутри него автоматически создаётся подпапка с названием книги (канала).">?</span>
+                <div class="full">
+                  <div class="label-row">
+                    <label>SFTP_REMOTE_DIR</label>
+                    <span class="help" tabindex="0" data-tip="Базовый удалённый каталог. Внутри него автоматически создаётся подпапка с названием книги (канала).">?</span>
+                  </div>
+                  <input name="sftp_remote_dir" value="{{ form.sftp_remote_dir }}" placeholder="/uploads/books">
                 </div>
-                <input name="ftps_remote_dir" value="{{ form.ftps_remote_dir }}" placeholder="/uploads/books">
-              </div>
-              <div class="full">
-                <div class="check-row">
-                  <input id="cleanup_local_after_ftps" type="checkbox" name="cleanup_local_after_ftps" {% if form.cleanup_local_after_ftps %}checked{% endif %}>
-                  <label for="cleanup_local_after_ftps">Удалять локальный файл после подтверждённой загрузки на FTPS</label>
-                  <span class="help" tabindex="0" data-tip="Удаление происходит только после проверки размера и SHA-256 хэша удалённого файла.">?</span>
+                <div class="full">
+                  <div class="check-row">
+                    <input id="cleanup_local_after_sftp" type="checkbox" name="cleanup_local_after_sftp" {% if form.cleanup_local_after_sftp %}checked{% endif %}>
+                    <label for="cleanup_local_after_sftp">Удалять локальный файл после подтверждённой загрузки на SFTP</label>
+                  </div>
                 </div>
               </div>
             </div>
           </div>
-          <div class="full">
-            <div class="label-row">
-              <label>Путь сохранения аудио</label>
-              <span class="help" tabindex="0" data-tip="Базовая локальная папка. Внутри неё бот автоматически создаст подпапку с названием канала.">?</span>
-            </div>
-            <input name="download_dir" value="{{ form.download_dir }}">
+        </div>
+
+        <div id="tab-ftps" class="tab-panel">
+          <div class="check-row">
+            <input id="show-ftps-settings" type="checkbox">
+            <label for="show-ftps-settings">Показать/скрыть host/login/port/password</label>
           </div>
-          <div>
-            <div class="label-row">
-              <label>SESSION_NAME</label>
-              <span class="help" tabindex="0" data-tip="Имя файла сессии Telethon для сохранения авторизации.">?</span>
+          <div class="grid">
+            <div id="ftps-group" class="full {% if not form.use_ftps %}hidden{% endif %}">
+              <div class="grid">
+                <div>
+                  <div class="label-row"><label>FTPS_HOST</label></div>
+                  <input class="ftps-secret" type="password" name="ftps_host" value="{{ form.ftps_host }}" placeholder="ftps.example.com">
+                </div>
+                <div>
+                  <div class="label-row"><label>FTPS_PORT</label></div>
+                  <input class="ftps-secret" type="password" name="ftps_port" value="{{ form.ftps_port }}" placeholder="21">
+                </div>
+                <div>
+                  <div class="label-row"><label>FTPS_USERNAME</label></div>
+                  <input class="ftps-secret" type="password" name="ftps_username" value="{{ form.ftps_username }}" placeholder="username">
+                </div>
+                <div>
+                  <div class="label-row"><label>FTPS_PASSWORD</label></div>
+                  <input class="ftps-secret" type="password" name="ftps_password" value="{{ form.ftps_password }}" placeholder="password">
+                </div>
+                <div class="full">
+                  <div class="label-row">
+                    <label>FTPS_REMOTE_DIR</label>
+                    <span class="help" tabindex="0" data-tip="Базовый удалённый каталог. Внутри него автоматически создаётся подпапка с названием книги (канала).">?</span>
+                  </div>
+                  <input name="ftps_remote_dir" value="{{ form.ftps_remote_dir }}" placeholder="/uploads/books">
+                </div>
+                <div class="full">
+                  <div class="check-row">
+                    <input id="cleanup_local_after_ftps" type="checkbox" name="cleanup_local_after_ftps" {% if form.cleanup_local_after_ftps %}checked{% endif %}>
+                    <label for="cleanup_local_after_ftps">Удалять локальный файл после подтверждённой загрузки на FTPS</label>
+                  </div>
+                </div>
+              </div>
             </div>
-            <input name="session_name" value="{{ form.session_name }}">
           </div>
+        </div>
+
+        <div class="grid" style="margin-top: 12px;">
           <div class="field-sm">
             <div class="label-row">
               <label>STARTUP_SCAN_LIMIT</label>
@@ -562,19 +586,35 @@
             </div>
             <input name="download_concurrency" value="{{ form.download_concurrency }}" placeholder="3">
           </div>
-          <div class="field-sm">
-            <div class="label-row">
-              <label>Код из Telegram (если запросили)</label>
-              <span class="help" tabindex="0" data-tip="Одноразовый код подтверждения, который Telegram присылает при входе.">?</span>
+          <div class="full">
+            <div class="check-row">
+              <input id="remember_me" type="checkbox" name="remember_me" {% if form.remember_me %}checked{% endif %}>
+              <label for="remember_me">Запомнить меня</label>
             </div>
-            <input name="code" value="{{ form.code }}" placeholder="12345">
           </div>
-          <div>
-            <div class="label-row">
-              <label>Пароль 2FA (если включен)</label>
-              <span class="help" tabindex="0" data-tip="Пароль облачного 2FA, если включена двухфакторная защита.">?</span>
+          <div class="full">
+            <div class="check-row">
+              <input id="use_mtproxy" type="checkbox" name="use_mtproxy" {% if form.use_mtproxy %}checked{% endif %}>
+              <label for="use_mtproxy">Использовать mtproxy</label>
             </div>
-            <input type="password" name="password" value="{{ form.password }}" placeholder="Пароль 2FA">
+          </div>
+          <div class="full">
+            <div class="check-row">
+              <input id="use_sftp" type="checkbox" name="use_sftp" {% if form.use_sftp %}checked{% endif %}>
+              <label for="use_sftp">Загружать на SFTP</label>
+            </div>
+          </div>
+          <div class="full">
+            <div class="check-row">
+              <input id="use_ftps" type="checkbox" name="use_ftps" {% if form.use_ftps %}checked{% endif %}>
+              <label for="use_ftps">Загружать на FTPS</label>
+            </div>
+          </div>
+          <div class="full">
+            <div class="check-row">
+              <input id="enable_periodic_checks" type="checkbox" name="enable_periodic_checks" {% if form.enable_periodic_checks %}checked{% endif %}>
+              <label for="enable_periodic_checks">Периодически проверять новые главы</label>
+            </div>
           </div>
           <div class="full">
             <div class="index-inline">
@@ -598,7 +638,6 @@
             <div class="check-row">
               <input id="download_new" type="checkbox" name="download_new" {% if form.download_new %}checked{% endif %}>
               <label for="download_new">Скачать новые</label>
-              <span class="help" tabindex="0" data-tip="Автоматически подставляет диапазон новых глав и блокирует ручное редактирование полей от/до.">?</span>
             </div>
           </div>
         </div>
@@ -722,6 +761,7 @@
             <tr>
               <th>#</th>
               <th>message_id</th>
+              <th>✓</th>
               <th>Название</th>
               <th>Дата</th>
             </tr>
@@ -732,13 +772,14 @@
               <tr>
                 <td class="mono">{{ item.index }}</td>
                 <td class="mono">{{ item.message_id }}</td>
+                <td>{% if item.downloaded %}<span class="downloaded-ok">✓</span>{% else %}<span class="downloaded-empty">-</span>{% endif %}</td>
                 <td>{{ item.title }}</td>
                 <td>{{ item.date }}</td>
               </tr>
               {% endfor %}
             {% else %}
               <tr>
-                <td colspan="4">Нет данных. Нажмите "Авторизоваться" или "Обновить предпросмотр".</td>
+                <td colspan="5">Нет данных. Нажмите "Авторизоваться" или "Обновить предпросмотр".</td>
               </tr>
             {% endif %}
           </tbody>
@@ -874,6 +915,35 @@
     });
 
     applyTheme(localStorage.getItem('theme') || 'light');
+
+    function activateTab(tabId) {
+      document.querySelectorAll('.tab-panel').forEach((el) => el.classList.remove('active'));
+      document.querySelectorAll('.tab-btn').forEach((el) => el.classList.remove('active'));
+      const panel = document.getElementById(tabId);
+      const btn = document.querySelector(`.tab-btn[data-tab-target="${tabId}"]`);
+      if (panel) panel.classList.add('active');
+      if (btn) btn.classList.add('active');
+    }
+
+    document.querySelectorAll('.tab-btn').forEach((btn) => {
+      btn.addEventListener('click', () => activateTab(btn.getAttribute('data-tab-target')));
+    });
+    activateTab('tab-telegram');
+
+    function bindRevealToggle(toggleId, selector) {
+      const toggle = document.getElementById(toggleId);
+      const apply = () => {
+        document.querySelectorAll(selector).forEach((input) => {
+          input.type = toggle.checked ? 'text' : 'password';
+        });
+      };
+      toggle.addEventListener('change', apply);
+      apply();
+    }
+
+    bindRevealToggle('show-telegram-settings', '.tg-secret');
+    bindRevealToggle('show-sftp-settings', '.sftp-secret');
+    bindRevealToggle('show-ftps-settings', '.ftps-secret');
 
     function toggleMtproxyField() {
       const useProxy = document.getElementById('use_mtproxy').checked;

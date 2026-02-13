@@ -786,28 +786,35 @@ async def _fetch_preview(settings: Settings, limit: int = PREVIEW_LIMIT) -> tupl
             return False, "Сначала выполните авторизацию.", []
 
         channel = await resolve_channel_entity(client, settings.channel)
+        channel_id = utils.get_peer_id(channel)
+        db = AppDatabase(DB_PATH)
 
         items: list[dict] = []
         index = 1
-        async for message in client.iter_messages(channel, limit=limit, reverse=True):
-            if not is_audio_message(message):
-                continue
+        try:
+            async for message in client.iter_messages(channel, limit=limit, reverse=True):
+                if not is_audio_message(message):
+                    continue
 
-            file_name = ""
-            if message.file and getattr(message.file, "name", None):
-                file_name = str(message.file.name)
+                file_name = ""
+                if message.file and getattr(message.file, "name", None):
+                    file_name = str(message.file.name)
 
-            title = file_name or (message.message or "audio")
-            date_text = message.date.strftime("%Y-%m-%d %H:%M") if message.date else ""
-            items.append(
-                {
-                    "index": index,
-                    "message_id": message.id,
-                    "title": title.replace("\n", " ")[:80],
-                    "date": date_text,
-                }
-            )
-            index += 1
+                title = file_name or (message.message or "audio")
+                date_text = message.date.strftime("%Y-%m-%d %H:%M") if message.date else ""
+                is_downloaded = db.already_downloaded(channel_id, int(message.id))
+                items.append(
+                    {
+                        "index": index,
+                        "message_id": message.id,
+                        "title": title.replace("\n", " ")[:80],
+                        "date": date_text,
+                        "downloaded": is_downloaded,
+                    }
+                )
+                index += 1
+        finally:
+            db.close()
 
         return True, f"Найдено аудио: {len(items)}", items
     except Exception as exc:
