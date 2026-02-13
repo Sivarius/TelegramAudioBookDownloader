@@ -338,3 +338,23 @@ class AppDatabase:
         if row and row[0]:
             return int(row[0])
         return 0
+
+    def get_channel_state_by_ref(self, channel_ref: str) -> dict:
+        ref = (channel_ref or "").strip()
+        if not ref:
+            return {"last_message_id": 0, "last_file_path": ""}
+        cur = self._conn.execute(
+            """
+            SELECT last_message_id, last_file_path
+            FROM channel_state
+            WHERE channel_ref = ?
+            """,
+            (ref,),
+        )
+        row = cur.fetchone()
+        if not row:
+            return {"last_message_id": 0, "last_file_path": ""}
+        return {
+            "last_message_id": int(row[0] or 0),
+            "last_file_path": row[1] or "",
+        }

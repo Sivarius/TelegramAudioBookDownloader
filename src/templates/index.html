@@ -500,14 +500,21 @@
               <label>С индекса</label>
               <span class="help" tabindex="0" data-tip="Начальный номер аудио из правого списка предпросмотра.">?</span>
             </div>
-            <input name="from_index" value="{{ form.from_index }}" placeholder="1">
+            <input id="from_index" name="from_index" value="{{ form.from_index }}" placeholder="1">
           </div>
           <div>
             <div class="label-row">
               <label>По индекс</label>
               <span class="help" tabindex="0" data-tip="Конечный номер аудио из правого списка предпросмотра.">?</span>
             </div>
-            <input name="to_index" value="{{ form.to_index }}" placeholder="50">
+            <input id="to_index" name="to_index" value="{{ form.to_index }}" placeholder="50">
+          </div>
+          <div class="full">
+            <div class="check-row">
+              <input id="download_new" type="checkbox" name="download_new" {% if form.download_new %}checked{% endif %}>
+              <label for="download_new">Скачать новые</label>
+              <span class="help" tabindex="0" data-tip="Автоматически подставляет диапазон новых глав и блокирует ручное редактирование полей от/до.">?</span>
+            </div>
           </div>
         </div>
 
@@ -572,8 +579,20 @@
         <div id="status-concurrency">
           Параллельность: {{ status.current_concurrency }} / {{ status.configured_concurrency }}
         </div>
-        <div id="status-progress">
-          Прогресс файла: {{ status.progress_percent }}% ({{ status.progress_received }} / {{ status.progress_total }} байт)
+        <div id="status-progress">Прогресс файла: {{ status.progress_percent }}% ({{ status.progress_received }} / {{ status.progress_total }} байт)</div>
+        <div id="file-progress-list" class="table-wrap" style="max-height:180px; margin-top:8px;">
+          <table>
+            <thead>
+              <tr>
+                <th>message_id</th>
+                <th>Прогресс</th>
+                <th>Статус</th>
+              </tr>
+            </thead>
+            <tbody id="file-progress-body">
+              <tr><td colspan="3">Нет активных загрузок.</td></tr>
+            </tbody>
+          </table>
         </div>
         <div id="status-current">Текущий message_id: {{ status.current_message_id }}</div>
         <div id="status-file">Последний файл: {{ status.last_file }}</div>
@@ -662,6 +681,34 @@
       document.getElementById('status-current').textContent = `Текущий message_id: ${s.current_message_id || ''}`;
       document.getElementById('status-file').textContent = `Последний файл: ${s.last_file || ''}`;
       document.getElementById('status-updated').textContent = `Обновлено: ${s.updated_at || ''}`;
+      renderFileProgresses(s.file_progresses || {});
+    }
+
+    function renderFileProgresses(itemsMap) {
+      const body = document.getElementById('file-progress-body');
+      const entries = Object.entries(itemsMap || {});
+      if (!entries.length) {
+        body.innerHTML = '<tr><td colspan="3">Нет активных загрузок.</td></tr>';
+        return;
+      }
+      entries.sort((a, b) => Number(b[0]) - Number(a[0]));
+      body.innerHTML = '';
+      entries.forEach(([messageId, item]) => {
+        const percent = Number(item.percent || 0);
+        const received = Number(item.received || 0);
+        const total = Number(item.total || 0);
+        const state = String(item.state || '');
+        const row = document.createElement('tr');
+        row.innerHTML = `
+          <td class="mono">${messageId}</td>
+          <td>
+            <progress max="100" value="${percent}" style="width:100%;"></progress>
+            <div class="sub" style="margin:2px 0 0 0;">${percent}% (${received}/${total})</div>
+          </td>
+          <td>${state}</td>
+        `;
+        body.appendChild(row);
+      });
     }
 
     function connectStatusStream() {
@@ -755,6 +802,8 @@
           btn.addEventListener('click', () => {
             document.getElementById('channel_id').value = item.channel_ref || '';
             document.getElementById('cleanup_local_after_sftp').checked = !!item.cleanup_local;
+            document.getElementById('status-file').textContent = `Последний файл: ${item.last_file_path || ''}`;
+            document.getElementById('status-current').textContent = `Текущий message_id: ${item.last_message_id || ''}`;
           });
           const prefWrap = document.createElement('div');
           prefWrap.className = 'channel-prefs';
@@ -831,6 +880,35 @@
     }
 
     document.getElementById('debug-toggle').addEventListener('change', refreshDebugLogs);
+
+    async function applyDownloadNewRange(enabled) {
+      const fromInput = document.getElementById('from_index');
+      const toInput = document.getElementById('to_index');
+      fromInput.disabled = enabled;
+      toInput.disabled = enabled;
+      if (!enabled) {
+        return;
+      }
+      const data = new FormData(document.querySelector('form'));
+      try {
+        const response = await fetch('/suggest_new_range', { method: 'POST', body: data });
+        const payload = await response.json();
+        if (payload && payload.ok) {
+          fromInput.value = payload.from_index || '';
+          toInput.value = payload.to_index || '';
+          const status = document.getElementById('channel-menu-status');
+          if (status && payload.message) {
+            status.textContent = payload.message;
+          }
+        }
+      } catch (_) {
+      }
+    }
+
+    document.getElementById('download_new').addEventListener('change', (e) => {
+      applyDownloadNewRange(!!e.target.checked);
+    });
+    applyDownloadNewRange(document.getElementById('download_new').checked);
 
     setInterval(() => {
       refreshDebugLogs();

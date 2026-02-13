@@ -87,6 +87,7 @@ worker_status = {
     "progress_percent": 0,
     "progress_received": 0,
     "progress_total": 0,
+    "file_progresses": {},
 }
 preview_cache: list[dict] = []
 auth_status = {
@@ -198,6 +199,7 @@ def _load_saved_form() -> dict:
             "sftp_password": db.get_setting("SFTP_PASSWORD") or "",
             "sftp_remote_dir": db.get_setting("SFTP_REMOTE_DIR") or "/uploads",
             "cleanup_local_after_sftp": (db.get_setting("CLEANUP_LOCAL_AFTER_SFTP") or "0") == "1",
+            "download_new": False,
             "remember_me": (db.get_setting("REMEMBER_ME") or "1") != "0",
         }
     finally:
@@ -228,6 +230,7 @@ def _form_from_request() -> dict:
         "sftp_password": request.form.get("sftp_password", saved["sftp_password"]).strip(),
         "sftp_remote_dir": request.form.get("sftp_remote_dir", saved["sftp_remote_dir"]).strip(),
         "cleanup_local_after_sftp": request.form.get("cleanup_local_after_sftp") == "on",
+        "download_new": request.form.get("download_new") == "on",
         "remember_me": request.form.get("remember_me") == "on",
     }
 
@@ -454,6 +457,12 @@ async def _collect_saved_channels_status(
             status = "Нет новых аудио"
             latest_audio_id = int(saved.get("latest_audio_id") or 0)
             error_text = ""
+            last_state = {"last_message_id": 0, "last_file_path": ""}
+            db_state = AppDatabase(DB_PATH)
+            try:
+                last_state = db_state.get_channel_state_by_ref(channel_ref)
+            finally:
+                db_state.close()
             try:
                 entity = await resolve_channel_entity(client, channel_ref)
                 marked_channel_id = utils.get_peer_id(entity)
@@ -511,6 +520,8 @@ async def _collect_saved_channels_status(
                     "cleanup_local": bool(saved.get("cleanup_local")),
                     "last_checked_at": saved.get("last_checked_at") or "",
                     "latest_audio_id": latest_audio_id,
+                    "last_message_id": int(last_state.get("last_message_id") or 0),
+                    "last_file_path": last_state.get("last_file_path") or "",
                     "has_new_audio": has_new_audio,
                     "status": status,
                     "last_error": error_text or (saved.get("last_error") or ""),
@@ -671,6 +682,21 @@ async def _fetch_preview(settings: Settings, limit: int = PREVIEW_LIMIT) -> tupl
         await client.disconnect()
 
 
+async def _resolve_last_downloaded_message_id(settings: Settings) -> int:
+    client = create_telegram_client(settings)
+    await client.connect()
+    try:
+        channel = await resolve_channel_entity(client, settings.channel)
+        channel_id = utils.get_peer_id(channel)
+        db = AppDatabase(DB_PATH)
+        try:
+            return db.get_last_downloaded_message_id(channel_id)
+        finally:
+            db.close()
+    finally:
+        await client.disconnect()
+
+
 def _pick_range_ids(items: list[dict], from_index_raw: str, to_index_raw: str) -> Optional[set[int]]:
     if not from_index_raw and not to_index_raw:
         return None
@@ -717,16 +743,47 @@ def _start_worker(
             progress_percent=0,
             progress_received=0,
             progress_total=0,
+            file_progresses={},
             current_message_id="",
             last_file="",
             configured_concurrency=settings.download_concurrency,
             current_concurrency=settings.download_concurrency,
         )
 
+        def _update_progress_item(
+            message_id: str,
+            *,
+            percent: Optional[int] = None,
+            received: Optional[int] = None,
+            total: Optional[int] = None,
+            state: Optional[str] = None,
+            file_path: Optional[str] = None,
+        ) -> None:
+            current = dict(worker_status.get("file_progresses", {}))
+            item = dict(current.get(message_id, {}))
+            if percent is not None:
+                item["percent"] = int(percent)
+            if received is not None:
+                item["received"] = int(received)
+            if total is not None:
+                item["total"] = int(total)
+            if state is not None:
+                item["state"] = state
+            if file_path:
+                item["file_path"] = file_path
+            item["updated_at"] = datetime.now().strftime("%H:%M:%S")
+            current[message_id] = item
+            if len(current) > 40:
+                keys = list(current.keys())
+                for key in keys[:-40]:
+                    current.pop(key, None)
+            _set_status(file_progresses=current)
+
         def _status_hook(payload: dict) -> None:
             event = payload.get("event", "")
             message_id = str(payload.get("message_id", ""))
             if event == "downloading":
+                _update_progress_item(message_id, percent=0, received=0, total=0, state="downloading")
                 _set_status(
                     current_message_id=message_id,
                     message=f"Скачивание message_id={message_id}",
@@ -735,6 +792,13 @@ def _start_worker(
                     progress_total=0,
                 )
             elif event == "progress":
+                _update_progress_item(
+                    message_id,
+                    percent=int(payload.get("percent", 0)),
+                    received=int(payload.get("received", 0)),
+                    total=int(payload.get("total", 0)),
+                    state="downloading",
+                )
                 _set_status(
                     current_message_id=message_id,
                     progress_percent=int(payload.get("percent", 0)),
@@ -742,6 +806,12 @@ def _start_worker(
                     progress_total=int(payload.get("total", 0)),
                 )
             elif event == "downloaded":
+                _update_progress_item(
+                    message_id,
+                    percent=100,
+                    state="done",
+                    file_path=str(payload.get("file_path", "")),
+                )
                 _set_status(
                     downloaded=int(worker_status.get("downloaded", 0)) + 1,
                     current_message_id=message_id,
@@ -750,6 +820,7 @@ def _start_worker(
                     message=f"Скачан message_id={message_id}",
                 )
             elif event == "failed":
+                _update_progress_item(message_id, state="failed")
                 _set_status(
                     failed=int(worker_status.get("failed", 0)) + 1,
                     current_message_id=message_id,
@@ -769,16 +840,19 @@ def _start_worker(
             elif event == "sftp_ready":
                 _set_status(message=str(payload.get("message", "SFTP готов.")))
             elif event == "sftp_uploaded":
+                _update_progress_item(message_id, state="sftp_uploaded")
                 _set_status(
                     sftp_uploaded=int(worker_status.get("sftp_uploaded", 0)) + 1,
                     message=f"SFTP загружен: message_id={message_id}",
                 )
             elif event == "sftp_skipped":
+                _update_progress_item(message_id, state="sftp_skipped")
                 _set_status(
                     sftp_skipped=int(worker_status.get("sftp_skipped", 0)) + 1,
                     message=f"SFTP пропуск: message_id={message_id}",
                 )
             elif event == "sftp_failed":
+                _update_progress_item(message_id, state="sftp_failed")
                 _set_status(
                     sftp_failed=int(worker_status.get("sftp_failed", 0)) + 1,
                     message=f"SFTP ошибка: message_id={message_id}",
@@ -1068,6 +1142,58 @@ def channels_preferences_update():
     settings = replace(settings, cleanup_local_after_sftp=cleanup_local)
     _store_settings(settings)
     return jsonify({"ok": True, "message": "Настройки канала сохранены."})
+
+
+@app.post("/suggest_new_range")
+def suggest_new_range():
+    form = _form_from_request()
+    try:
+        settings = _build_settings(form, require_channel=True)
+    except ValueError as exc:
+        return jsonify({"ok": False, "message": str(exc)}), 400
+
+    global preview_cache
+    if not preview_cache:
+        ok_preview, _, items = asyncio.run(_fetch_preview(settings))
+        preview_cache = items if ok_preview else []
+
+    if not preview_cache:
+        return jsonify({"ok": False, "message": "Нет данных предпросмотра. Нажмите Обновить предпросмотр."}), 200
+
+    try:
+        last_downloaded_id = asyncio.run(_resolve_last_downloaded_message_id(settings))
+    except Exception as exc:
+        return jsonify({"ok": False, "message": f"Не удалось вычислить диапазон новых: {exc}"}), 200
+
+    from_index = 0
+    to_index = int(len(preview_cache))
+    for item in preview_cache:
+        if int(item.get("message_id", 0)) > int(last_downloaded_id):
+            from_index = int(item.get("index", 0))
+            break
+
+    if from_index <= 0:
+        return jsonify(
+            {
+                "ok": True,
+                "message": "Новых глав не найдено.",
+                "from_index": "",
+                "to_index": "",
+                "has_new": False,
+                "last_downloaded_id": int(last_downloaded_id),
+            }
+        )
+
+    return jsonify(
+        {
+            "ok": True,
+            "message": "Диапазон новых глав определен.",
+            "from_index": str(from_index),
+            "to_index": str(to_index),
+            "has_new": True,
+            "last_downloaded_id": int(last_downloaded_id),
+        }
+    )
 
 
 @app.post("/stop_server")
