@@ -184,10 +184,10 @@
       color: var(--text);
     }
     .channel-item {
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      gap: 8px;
+      display: grid;
+      grid-template-columns: 1.2fr 1fr auto;
+      align-items: start;
+      gap: 10px;
       border-bottom: 1px solid var(--line);
       padding: 8px 0;
     }
@@ -207,6 +207,30 @@
     .badge.warn {
       color: var(--warn);
       border-color: var(--warn);
+    }
+    .channel-meta .mono {
+      line-height: 1.2;
+      word-break: break-all;
+    }
+    .channel-prefs {
+      display: grid;
+      gap: 4px;
+      margin-top: 2px;
+    }
+    .channel-prefs .check-row {
+      margin: 0;
+      gap: 6px;
+      font-size: 13px;
+    }
+    .channel-prefs input[type="checkbox"] {
+      transform: scale(0.95);
+    }
+    .channel-actions {
+      display: flex;
+      flex-direction: column;
+      align-items: flex-end;
+      gap: 6px;
+      min-width: 96px;
     }
     .check-row {
       display: flex;
@@ -233,6 +257,16 @@
     }
     .btn.secondary {
       background: var(--btn-secondary);
+    }
+    .btn.compact {
+      padding: 8px 12px;
+      font-size: 13px;
+      border-radius: 7px;
+    }
+    .btn.xs {
+      padding: 6px 10px;
+      font-size: 12px;
+      border-radius: 7px;
     }
     .status {
       margin-top: 14px;
@@ -285,6 +319,12 @@
       .wrap {
         grid-template-columns: 1fr;
       }
+      .channel-item {
+        grid-template-columns: 1fr;
+      }
+      .channel-actions {
+        align-items: flex-start;
+      }
     }
     @media (max-width: 720px) {
       .grid {
@@ -299,8 +339,8 @@
       <h1>TeleGaParser</h1>
       <p class="sub">Авторизация Telegram, выбор канала и запуск скачивания аудио.</p>
       <div class="btn-row">
-        <button id="theme-toggle" class="btn secondary" type="button">Тёмная тема</button>
-        <button id="channel-menu-toggle" class="btn secondary" type="button">История каналов</button>
+        <button id="theme-toggle" class="btn secondary compact" type="button">Тёмная тема</button>
+        <button id="channel-menu-toggle" class="btn secondary compact" type="button">История каналов</button>
         <label class="check-row" style="margin:0 0 0 4px;">
           <input id="debug-toggle" type="checkbox">
           <span>Дебаг</span>
@@ -689,21 +729,23 @@
           const row = document.createElement('div');
           row.className = 'channel-item';
           const left = document.createElement('div');
+          left.className = 'channel-meta';
           left.innerHTML = `<div><strong>${item.channel_title || item.channel_ref}</strong></div><div class="mono">${item.channel_ref}</div><div class="sub">${item.status || ''}</div><div class="sub">Последняя проверка: ${item.last_checked_at || 'никогда'}</div>`;
           const rightWrap = document.createElement('div');
+          rightWrap.className = 'channel-actions';
           const badge = document.createElement('span');
           badge.className = `badge ${item.has_new_audio ? 'ok' : 'warn'}`;
           badge.textContent = item.has_new_audio ? 'Новые есть' : 'Новых нет';
           const btn = document.createElement('button');
           btn.type = 'button';
-          btn.className = 'btn secondary';
+          btn.className = 'btn secondary xs';
           btn.textContent = 'Выбрать';
           btn.addEventListener('click', () => {
             document.getElementById('channel_id').value = item.channel_ref || '';
             document.getElementById('cleanup_local_after_sftp').checked = !!item.cleanup_local;
           });
           const prefWrap = document.createElement('div');
-          prefWrap.style.marginTop = '6px';
+          prefWrap.className = 'channel-prefs';
           prefWrap.innerHTML = `
             <label class="check-row"><input type="checkbox" data-pref="check_new">Проверять новые главы</label>
             <label class="check-row"><input type="checkbox" data-pref="auto_download">Включить автозагрузку</label>
@@ -717,7 +759,7 @@
 
           const saveBtn = document.createElement('button');
           saveBtn.type = 'button';
-          saveBtn.className = 'btn secondary';
+          saveBtn.className = 'btn secondary xs';
           saveBtn.textContent = 'Сохранить';
           saveBtn.addEventListener('click', async () => {
             const data = new FormData(document.querySelector('form'));
