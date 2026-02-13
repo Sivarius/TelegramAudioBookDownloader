@@ -422,6 +422,13 @@
               <span class="help" tabindex="0" data-tip="Сохраняет Telegram-сессию, чтобы не проходить авторизацию заново.">?</span>
             </div>
           </div>
+          <div class="full">
+            <div class="check-row">
+              <input id="enable_periodic_checks" type="checkbox" name="enable_periodic_checks" {% if form.enable_periodic_checks %}checked{% endif %}>
+              <label for="enable_periodic_checks">Периодически проверять новые главы</label>
+              <span class="help" tabindex="0" data-tip="По умолчанию выключено. Включите, если нужна фоновая проверка каналов по интервалу.">?</span>
+            </div>
+          </div>
           <div id="mtproxy-group" class="full {% if not form.use_mtproxy %}hidden{% endif %}">
             <div class="label-row">
               <label>Ссылка/строка MTProxy</label>

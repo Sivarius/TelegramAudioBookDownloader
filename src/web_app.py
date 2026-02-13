@@ -202,6 +202,7 @@ def _load_saved_form() -> dict:
             "cleanup_local_after_sftp": (db.get_setting("CLEANUP_LOCAL_AFTER_SFTP") or "0") == "1",
             "download_new": False,
             "remember_me": (db.get_setting("REMEMBER_ME") or "1") != "0",
+            "enable_periodic_checks": (db.get_setting("ENABLE_PERIODIC_CHECKS") or "0") == "1",
         }
     finally:
         db.close()
@@ -233,6 +234,7 @@ def _form_from_request() -> dict:
         "cleanup_local_after_sftp": request.form.get("cleanup_local_after_sftp") == "on",
         "download_new": request.form.get("download_new") == "on",
         "remember_me": request.form.get("remember_me") == "on",
+        "enable_periodic_checks": request.form.get("enable_periodic_checks") == "on",
     }
 
 
@@ -296,6 +298,22 @@ def _store_remember_me(remember_me: bool) -> None:
     db = AppDatabase(DB_PATH)
     try:
         db.set_setting("REMEMBER_ME", "1" if remember_me else "0")
+    finally:
+        db.close()
+
+
+def _store_enable_periodic_checks(enabled: bool) -> None:
+    db = AppDatabase(DB_PATH)
+    try:
+        db.set_setting("ENABLE_PERIODIC_CHECKS", "1" if enabled else "0")
+    finally:
+        db.close()
+
+
+def _is_periodic_checks_enabled() -> bool:
+    db = AppDatabase(DB_PATH)
+    try:
+        return (db.get_setting("ENABLE_PERIODIC_CHECKS") or "0") == "1"
     finally:
         db.close()
 
@@ -601,9 +619,13 @@ def _start_monitor_thread() -> None:
 
 def _run_periodic_checks_once() -> None:
     try:
+        if not _is_periodic_checks_enabled():
+            return
         if worker_thread and worker_thread.is_alive():
             return
         form = _load_saved_form()
+        if not form.get("api_id") or not form.get("api_hash") or not form.get("phone"):
+            return
         settings = _build_settings(form, require_channel=False)
         ok, _, channels = asyncio.run(_collect_saved_channels_status(settings, only_due=True))
         if not ok:
@@ -1031,6 +1053,7 @@ def authorize():
     runtime_remember_me = bool(form["remember_me"])
     runtime_session_name = settings.session_name
     _store_remember_me(runtime_remember_me)
+    _store_enable_periodic_checks(bool(form["enable_periodic_checks"]))
     if not runtime_remember_me:
         _delete_session_files(settings.session_name)
 
@@ -1077,6 +1100,7 @@ def authorize():
 @app.post("/preview")
 def refresh_preview():
     form = _form_from_request()
+    _store_enable_periodic_checks(bool(form["enable_periodic_checks"]))
 
     try:
         settings = _build_settings(form)
@@ -1118,6 +1142,7 @@ def start_download():
     runtime_remember_me = bool(form["remember_me"])
     runtime_session_name = settings.session_name
     _store_remember_me(runtime_remember_me)
+    _store_enable_periodic_checks(bool(form["enable_periodic_checks"]))
 
     proxy_ok, proxy_message = asyncio.run(_validate_proxy(settings))
     if settings.use_mtproxy:
@@ -1179,6 +1204,7 @@ def check_sftp():
 @app.post("/channels_status")
 def channels_status():
     form = _form_from_request()
+    _store_enable_periodic_checks(bool(form["enable_periodic_checks"]))
     try:
         settings = _build_settings(form, require_channel=False)
     except ValueError as exc:
@@ -1191,6 +1217,7 @@ def channels_status():
 @app.post("/channels_preferences_update")
 def channels_preferences_update():
     form = _form_from_request()
+    _store_enable_periodic_checks(bool(form["enable_periodic_checks"]))
     try:
         settings = _build_settings(form, require_channel=False)
     except ValueError as exc:
