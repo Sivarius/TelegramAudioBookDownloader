@@ -1,0 +1,26 @@
+* text=auto
+
+# Source code and markup: keep LF in repo and working tree
+*.py text eol=lf
+*.md text eol=lf
+*.txt text eol=lf
+*.toml text eol=lf
+*.yml text eol=lf
+*.yaml text eol=lf
+*.html text eol=lf
+*.css text eol=lf
+*.js text eol=lf
+*.json text eol=lf
+*.env text eol=lf
+
+# Windows scripts: keep CRLF in working tree
+*.bat text eol=crlf
+*.cmd text eol=crlf
+*.ps1 text eol=crlf
+
+# Binary/state files
+*.sqlite3 -text
+*.session -text
+*.session-journal -text
+*.session-wal -text
+*.session-shm -text
