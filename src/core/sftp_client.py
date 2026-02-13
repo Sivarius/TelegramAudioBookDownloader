@@ -129,9 +129,33 @@ class SFTPSync:
         with self._io_lock:
             remote_path = posixpath.join(self._remote_channel_dir, file_name)
             uploaded = False
+            reuploaded = False
+            remote_exists = False
             if file_name in self._remote_file_names:
-                uploaded = False
+                remote_exists = True
             else:
+                try:
+                    self._sftp.stat(remote_path)
+                    remote_exists = True
+                except IOError:
+                    remote_exists = False
+
+            if remote_exists:
+                size_match, hash_match = self.verify_remote_file(
+                    local_file_path,
+                    remote_path,
+                    verify_hash=verify_hash,
+                )
+                verified = size_match and hash_match
+                if verified:
+                    self._remote_file_names.add(file_name)
+                    return (
+                        False,
+                        f"already_exists; remote={remote_path}; size_match={size_match}; hash_match={hash_match}; verified={verified}",
+                    )
+                reuploaded = True
+
+            if not remote_exists or reuploaded:
                 local_size = os.path.getsize(local_file_path)
                 self._sftp.put(local_file_path, remote_path, callback=progress_callback)
                 if progress_callback:
@@ -145,7 +169,13 @@ class SFTPSync:
                 verify_hash=verify_hash,
             )
             verified = size_match and hash_match
-            if uploaded:
+            if not verified:
+                raise RuntimeError(
+                    f"SFTP verify failed: remote={remote_path} size_match={size_match} hash_match={hash_match}"
+                )
+            if reuploaded:
+                reason = "reuploaded"
+            elif uploaded:
                 reason = "uploaded"
             else:
                 reason = "already_exists"

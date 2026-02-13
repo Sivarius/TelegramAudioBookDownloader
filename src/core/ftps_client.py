@@ -9,7 +9,7 @@ from typing import Callable, Optional
 
 from core.models import Settings
 
-FTPS_TIMEOUT_SECONDS = 15
+FTPS_TIMEOUT_SECONDS = 30
 
 
 class ImplicitFTP_TLS(FTP_TLS):
@@ -170,6 +170,15 @@ class FTPSSync:
             names = []
         self._remote_file_names = {posixpath.basename(name.rstrip("/")) for name in names}
 
+    def _keepalive(self) -> None:
+        if not self._ftps:
+            return
+        try:
+            self._ftps.voidcmd("NOOP")
+        except Exception:
+            # Keepalive is best-effort; next operation will surface real error if connection is broken.
+            pass
+
     def ensure_remote_dir(self, remote_dir: str) -> str:
         if not self._ftps:
             raise RuntimeError("FTPS is not connected.")
@@ -237,11 +246,35 @@ class FTPSSync:
             return False, "Пустое имя файла."
 
         with self._io_lock:
+            self._keepalive()
             remote_path = posixpath.join(self._remote_channel_dir, file_name)
             uploaded = False
+            reuploaded = False
+            remote_exists = False
             if file_name in self._remote_file_names:
-                uploaded = False
+                remote_exists = True
             else:
+                try:
+                    remote_exists = self._remote_exists(remote_path)
+                except Exception:
+                    remote_exists = False
+
+            if remote_exists:
+                size_match, hash_match = self.verify_remote_file(
+                    local_file_path,
+                    remote_path,
+                    verify_hash=verify_hash,
+                )
+                verified = size_match and hash_match
+                if verified:
+                    self._remote_file_names.add(file_name)
+                    return (
+                        False,
+                        f"already_exists; remote={remote_path}; size_match={size_match}; hash_match={hash_match}; verified={verified}",
+                    )
+                reuploaded = True
+
+            if not remote_exists or reuploaded:
                 total_size = os.path.getsize(local_file_path)
                 sent_bytes = 0
 
@@ -269,7 +302,11 @@ class FTPSSync:
                 verify_hash=verify_hash,
             )
             verified = size_match and hash_match
-            reason = "uploaded" if uploaded else "already_exists"
+            if not verified:
+                raise RuntimeError(
+                    f"FTPS verify failed: remote={remote_path} size_match={size_match} hash_match={hash_match}"
+                )
+            reason = "reuploaded" if reuploaded else ("uploaded" if uploaded else "already_exists")
             return (
                 uploaded,
                 f"{reason}; remote={remote_path}; size_match={size_match}; hash_match={hash_match}; verified={verified}",
@@ -294,6 +331,18 @@ class FTPSSync:
             remote_hash = self._sha256_remote(remote_file_path)
             hash_match = local_hash == remote_hash
         return size_match, hash_match
+
+    def _remote_exists(self, remote_file_path: str) -> bool:
+        if not self._ftps:
+            raise RuntimeError("FTPS не подключен.")
+        try:
+            size = self._ftps.size(remote_file_path)
+            return size is not None
+        except error_perm as exc:
+            # 550 commonly means missing file / denied; for existence check treat as missing.
+            if "550" in str(exc):
+                return False
+            raise
 
     @staticmethod
     def _sha256_local(path: str) -> str:

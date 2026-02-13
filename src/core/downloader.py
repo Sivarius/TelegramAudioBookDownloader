@@ -341,17 +341,14 @@ async def run_remote_uploader(
                 if stop_requested and stop_requested():
                     raise asyncio.CancelledError()
                 try:
-                    uploaded, info = await asyncio.wait_for(
-                        asyncio.to_thread(
-                            sync_client.upload_file_if_needed,
-                            str(file_path),
-                            _upload_progress,
-                            (
-                                cleanup_local_after_remote
-                                and str(getattr(sync_client, "name", "")).upper() != "FTPS"
-                            ),
+                    uploaded, info = await asyncio.to_thread(
+                        sync_client.upload_file_if_needed,
+                        str(file_path),
+                        _upload_progress,
+                        (
+                            cleanup_local_after_remote
+                            and str(getattr(sync_client, "name", "")).upper() != "FTPS"
                         ),
-                        timeout=75,
                     )
                     break
                 except Exception as exc:
@@ -379,10 +376,10 @@ async def run_remote_uploader(
                     await asyncio.sleep(min(6, 2 * attempt))
                     if stop_requested and stop_requested():
                         raise asyncio.CancelledError() from exc
-                    await asyncio.wait_for(asyncio.to_thread(sync_client.connect), timeout=15)
+                    await asyncio.wait_for(asyncio.to_thread(sync_client.connect), timeout=30)
                     await asyncio.wait_for(
                         asyncio.to_thread(sync_client.prepare_channel_dir, channel_folder),
-                        timeout=15,
+                        timeout=30,
                     )
             if last_exc and not info:
                 raise RuntimeError(
@@ -459,10 +456,10 @@ async def run_remote_uploader(
 
         async def _worker(worker_index: int) -> None:
             sync_client = sync_cls(settings)
-            await asyncio.wait_for(asyncio.to_thread(sync_client.connect), timeout=15)
+            await asyncio.wait_for(asyncio.to_thread(sync_client.connect), timeout=30)
             await asyncio.wait_for(
                 asyncio.to_thread(sync_client.prepare_channel_dir, channel_folder),
-                timeout=15,
+                timeout=30,
             )
             try:
                 while True:
