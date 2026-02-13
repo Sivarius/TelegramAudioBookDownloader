@@ -91,12 +91,9 @@ install_dependencies.bat
    ```
 4. Для prod-режима (только данные, без монтирования исходников):
    ```bash
-   # один раз перед запуском:
-   type nul > bot_data.sqlite3
-   type nul > user_session.session
-
    docker compose -f docker-compose.prod.yml up -d --build
    ```
+   Каталог `./data` и файл БД будут созданы автоматически.
 5. Открыть:
    - `http://127.0.0.1:8080`
 

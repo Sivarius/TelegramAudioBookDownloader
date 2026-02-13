@@ -24,7 +24,7 @@ from core.sftp_client import SFTPSync
 from core.telegram_client import create_telegram_client, is_audio_message, resolve_channel_entity
 
 
-DB_PATH = Path("bot_data.sqlite3")
+DB_PATH = Path(os.getenv("DB_PATH", "bot_data.sqlite3"))
 HOST = os.getenv("APP_HOST", "127.0.0.1")
 PORT = int(os.getenv("APP_PORT", "8080"))
 OPEN_BROWSER = os.getenv("OPEN_BROWSER", "1").strip().lower() in {"1", "true", "yes", "on"}
@@ -184,7 +184,7 @@ def _load_saved_form() -> dict:
             "phone": db.get_setting("PHONE") or "",
             "channel_id": db.get_setting("CHANNEL_ID") or "",
             "download_dir": db.get_setting("DOWNLOAD_DIR") or str(Path("downloads").resolve()),
-            "session_name": db.get_setting("SESSION_NAME") or "user_session",
+            "session_name": db.get_setting("SESSION_NAME") or os.getenv("SESSION_NAME", "user_session"),
             "startup_scan_limit": db.get_setting("STARTUP_SCAN_LIMIT") or "200",
             "download_concurrency": db.get_setting("DOWNLOAD_CONCURRENCY") or "3",
             "code": "",

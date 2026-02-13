@@ -6,6 +6,7 @@ __pycache__/
 *.session-wal
 *.session-shm
 downloads/
+data/
 bot_data.sqlite3
 *.sqlite3
 .venv/

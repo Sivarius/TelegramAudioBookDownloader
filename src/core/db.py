@@ -7,6 +7,11 @@ from core.models import Settings
 
 class AppDatabase:
     def __init__(self, db_path: Path) -> None:
+        db_path = Path(db_path)
+        # Guard against Docker bind-mount edge case where a missing host file
+        # may become a directory inside container.
+        if db_path.exists() and db_path.is_dir():
+            db_path = db_path / "bot_data.sqlite3"
         db_path.parent.mkdir(parents=True, exist_ok=True)
         self._conn = sqlite3.connect(db_path)
         self._conn.execute(
