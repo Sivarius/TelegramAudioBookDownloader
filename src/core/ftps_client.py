@@ -93,8 +93,7 @@ class FTPSSync:
             return True, "FTPS выключен."
         try:
             self.connect()
-            base_remote = (self.settings.ftps_remote_dir or "/").strip() or "/"
-            self.ensure_remote_dir(base_remote)
+            base_remote = self.ensure_remote_dir((self.settings.ftps_remote_dir or "/").strip() or "/")
             tls_mode = "verify=on" if self.settings.ftps_verify_tls else "verify=off"
             transfer_mode = "passive" if self.settings.ftps_passive_mode else "active"
             secure_mode = self.settings.ftps_security_mode
@@ -129,10 +128,9 @@ class FTPSSync:
         if not self._ftps:
             raise RuntimeError("FTPS is not connected.")
 
-        base_remote = (self.settings.ftps_remote_dir or "/").strip() or "/"
-        self.ensure_remote_dir(base_remote)
-        channel_remote = posixpath.join(base_remote.rstrip("/"), channel_folder)
-        self.ensure_remote_dir(channel_remote)
+        base_remote = self.ensure_remote_dir((self.settings.ftps_remote_dir or "/").strip() or "/")
+        channel_remote = posixpath.join(base_remote.rstrip("/"), channel_folder) if base_remote != "/" else f"/{channel_folder}"
+        channel_remote = self.ensure_remote_dir(channel_remote)
         self._remote_channel_dir = channel_remote
         try:
             names = self._ftps.nlst(channel_remote)
@@ -140,11 +138,43 @@ class FTPSSync:
             names = []
         self._remote_file_names = {posixpath.basename(name.rstrip("/")) for name in names}
 
-    def ensure_remote_dir(self, remote_dir: str) -> None:
+    def ensure_remote_dir(self, remote_dir: str) -> str:
         if not self._ftps:
             raise RuntimeError("FTPS is not connected.")
-        path = remote_dir.strip()
+        path = self._normalize_remote_dir(remote_dir)
         if not path:
+            return "."
+
+        candidates = [path]
+        if path.startswith("/"):
+            rel = path.lstrip("/")
+            if rel:
+                candidates.append(rel)
+
+        last_exc: Optional[Exception] = None
+        for candidate in candidates:
+            try:
+                self._ensure_remote_dir_once(candidate)
+                return candidate
+            except error_perm as exc:
+                # Some FTPS servers deny absolute paths in jailed home; retry as relative.
+                last_exc = exc
+
+        if last_exc:
+            raise last_exc
+        return path
+
+    @staticmethod
+    def _normalize_remote_dir(path: str) -> str:
+        normalized = (path or "").replace("\\", "/").strip()
+        while "//" in normalized:
+            normalized = normalized.replace("//", "/")
+        return normalized
+
+    def _ensure_remote_dir_once(self, path: str) -> None:
+        if not self._ftps:
+            raise RuntimeError("FTPS is not connected.")
+        if path in {"", ".", "./"}:
             return
         is_abs = path.startswith("/")
         parts = [p for p in path.split("/") if p]
