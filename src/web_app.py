@@ -982,6 +982,7 @@ def _start_worker(
                     "last_received": 0,
                     "last_ts": time.time(),
                     "speed_bps": 0.0,
+                    "started_ts": time.time(),
                 }
                 _set_status(message=f"Upload: {transfer_id}")
             elif event == "upload_progress":
@@ -990,13 +991,19 @@ def _start_worker(
                 total = int(payload.get("total", 0))
                 now = time.time()
                 state = upload_runtime.get(
-                    transfer_id, {"last_received": 0, "last_ts": now, "speed_bps": 0.0}
+                    transfer_id,
+                    {"last_received": 0, "last_ts": now, "speed_bps": 0.0, "started_ts": now},
                 )
                 delta_bytes = received - int(state.get("last_received", 0))
                 delta_time = now - float(state.get("last_ts", now))
-                speed_bps = float(state.get("speed_bps", 0.0))
-                if delta_bytes > 0 and delta_time > 0.2:
-                    speed_bps = delta_bytes / delta_time
+                started_ts = float(state.get("started_ts", now))
+                speed_bps_prev = float(state.get("speed_bps", 0.0))
+                speed_bps_inst = 0.0
+                if delta_bytes > 0 and delta_time > 0:
+                    speed_bps_inst = delta_bytes / delta_time
+                avg_time = max(0.001, now - started_ts)
+                speed_bps_avg = float(received) / avg_time if received > 0 else 0.0
+                speed_bps = max(speed_bps_inst, speed_bps_avg, speed_bps_prev)
                 eta_sec = 0.0
                 if speed_bps > 1 and total > received:
                     eta_sec = (total - received) / speed_bps
@@ -1004,6 +1011,7 @@ def _start_worker(
                     "last_received": received,
                     "last_ts": now,
                     "speed_bps": speed_bps,
+                    "started_ts": started_ts,
                 }
                 _update_upload_progress_item(
                     transfer_id,
@@ -1029,8 +1037,24 @@ def _start_worker(
             elif event == "upload_done":
                 transfer_id = message_id or ""
                 if transfer_id:
-                    _update_upload_progress_item(transfer_id, state="done", percent=100, eta_sec=0.0)
+                    final_speed = 0.0
+                    state = upload_runtime.get(transfer_id, {})
+                    if state:
+                        started_ts = float(state.get("started_ts", 0.0))
+                        last_ts = float(state.get("last_ts", 0.0))
+                        last_received = int(state.get("last_received", 0))
+                        if started_ts > 0 and last_ts > started_ts and last_received > 0:
+                            final_speed = float(last_received) / (last_ts - started_ts)
+                    _update_upload_progress_item(
+                        transfer_id,
+                        state="done",
+                        percent=100,
+                        eta_sec=0.0,
+                        speed_bps=final_speed if final_speed > 0 else None,
+                    )
                     upload_runtime.pop(transfer_id, None)
+                    if final_speed > 0:
+                        _set_status(upload_progress_speed_bps=final_speed)
                 _set_status(upload_progress_eta_sec=0.0)
             elif event == "local_cleaned":
                 transport = str(payload.get("transport", "SFTP"))
