@@ -236,6 +236,7 @@ def _load_saved_form() -> dict:
             "ftps_username": db.get_setting("FTPS_USERNAME") or "",
             "ftps_password": db.get_setting("FTPS_PASSWORD") or "",
             "ftps_remote_dir": db.get_setting("FTPS_REMOTE_DIR") or "/uploads",
+            "ftps_encoding": db.get_setting("FTPS_ENCODING") or "auto",
             "ftps_verify_tls": (db.get_setting("FTPS_VERIFY_TLS") or "1") == "1",
             "ftps_passive_mode": (db.get_setting("FTPS_PASSIVE_MODE") or "1") == "1",
             "ftps_security_mode": db.get_setting("FTPS_SECURITY_MODE") or "explicit",
@@ -279,6 +280,7 @@ def _form_from_request() -> dict:
         "ftps_username": request.form.get("ftps_username", saved["ftps_username"]).strip(),
         "ftps_password": request.form.get("ftps_password", saved["ftps_password"]).strip(),
         "ftps_remote_dir": request.form.get("ftps_remote_dir", saved["ftps_remote_dir"]).strip(),
+        "ftps_encoding": request.form.get("ftps_encoding", saved["ftps_encoding"]).strip().lower(),
         "ftps_verify_tls": request.form.get("ftps_verify_tls") == "on",
         "ftps_passive_mode": request.form.get("ftps_passive_mode") == "on",
         "ftps_security_mode": request.form.get("ftps_security_mode", saved["ftps_security_mode"]).strip().lower(),
@@ -320,6 +322,7 @@ def _build_settings(form: dict, require_channel: bool = True) -> Settings:
     ftps_port = _safe_int(form["ftps_port"], 21)
     if ftps_port <= 0:
         ftps_port = 21
+    ftps_encoding = form["ftps_encoding"] if form["ftps_encoding"] in {"auto", "utf-8", "cp1251", "latin-1"} else "auto"
     ftps_security_mode = form["ftps_security_mode"] if form["ftps_security_mode"] in {"explicit", "implicit"} else "explicit"
     ftps_upload_concurrency = _safe_int(form["ftps_upload_concurrency"], 2)
     if ftps_upload_concurrency < 1:
@@ -353,6 +356,7 @@ def _build_settings(form: dict, require_channel: bool = True) -> Settings:
         ftps_username=form["ftps_username"],
         ftps_password=form["ftps_password"],
         ftps_remote_dir=form["ftps_remote_dir"] or "/uploads",
+        ftps_encoding=ftps_encoding,
         ftps_verify_tls=bool(form["ftps_verify_tls"]),
         ftps_passive_mode=bool(form["ftps_passive_mode"]),
         ftps_security_mode=ftps_security_mode,
@@ -1002,6 +1006,7 @@ def _start_worker(
             setattr(_status_hook, "_upload_runtime", upload_runtime)
             event = payload.get("event", "")
             message_id = str(payload.get("message_id", ""))
+            is_upload_transfer = message_id.startswith("upload:")
             if event == "downloading":
                 _update_progress_item(message_id, percent=0, received=0, total=0, state="downloading")
                 progress_runtime[message_id] = {
@@ -1089,7 +1094,8 @@ def _start_worker(
             elif event == "sftp_ready":
                 _set_status(message=str(payload.get("message", "Удаленный протокол готов.")))
             elif event == "sftp_uploaded":
-                _update_progress_item(message_id, state="sftp_uploaded")
+                if not is_upload_transfer:
+                    _update_progress_item(message_id, state="sftp_uploaded")
                 _update_upload_progress_item(message_id, state="uploaded", percent=100, eta_sec=0.0)
                 upload_runtime.pop(message_id, None)
                 transport = str(payload.get("transport", "SFTP"))
@@ -1098,7 +1104,8 @@ def _start_worker(
                     message=f"{transport} загружен: message_id={message_id}",
                 )
             elif event == "sftp_skipped":
-                _update_progress_item(message_id, state="sftp_skipped")
+                if not is_upload_transfer:
+                    _update_progress_item(message_id, state="sftp_skipped")
                 _update_upload_progress_item(message_id, state="skipped", eta_sec=0.0)
                 upload_runtime.pop(message_id, None)
                 transport = str(payload.get("transport", "SFTP"))
@@ -1107,7 +1114,8 @@ def _start_worker(
                     message=f"{transport} пропуск: message_id={message_id}",
                 )
             elif event == "sftp_failed":
-                _update_progress_item(message_id, state="sftp_failed")
+                if not is_upload_transfer:
+                    _update_progress_item(message_id, state="sftp_failed")
                 _update_upload_progress_item(message_id, state="failed")
                 upload_runtime.pop(message_id, None)
                 transport = str(payload.get("transport", "SFTP"))

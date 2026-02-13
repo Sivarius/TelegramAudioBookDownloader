@@ -168,7 +168,10 @@ async def download_if_needed(
                     )
 
                 uploaded, sftp_info = await asyncio.to_thread(
-                    remote_sync.upload_file_if_needed, str(file_path), _upload_progress
+                    remote_sync.upload_file_if_needed,
+                    str(file_path),
+                    _upload_progress,
+                    cleanup_local_after_remote,
                 )
                 transport = str(getattr(remote_sync, "name", "REMOTE"))
                 if status_hook:
@@ -278,6 +281,11 @@ async def run_remote_uploader(
 
         channel_folder = local_dir.name
         transport = str(getattr(remote_sync, "name", "REMOTE"))
+        cleanup_local_after_remote = (
+            settings.cleanup_local_after_sftp
+            if settings.use_sftp
+            else settings.cleanup_local_after_ftps
+        )
         concurrency = max(1, int(getattr(settings, "ftps_upload_concurrency", 1)))
         if status_hook:
             status_hook(
@@ -315,7 +323,10 @@ async def run_remote_uploader(
                 )
 
             uploaded, info = await asyncio.to_thread(
-                sync_client.upload_file_if_needed, str(file_path), _upload_progress
+                sync_client.upload_file_if_needed,
+                str(file_path),
+                _upload_progress,
+                cleanup_local_after_remote,
             )
             if status_hook:
                 status_hook(

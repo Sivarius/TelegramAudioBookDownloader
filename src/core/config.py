@@ -142,6 +142,9 @@ def load_settings(db: AppDatabase) -> Settings:
     ftps_username = _env_or_db("FTPS_USERNAME", db)
     ftps_password = _env_or_db("FTPS_PASSWORD", db)
     ftps_remote_dir = _env_or_db("FTPS_REMOTE_DIR", db) or "/uploads"
+    ftps_encoding = (_env_or_db("FTPS_ENCODING", db) or "auto").strip().lower()
+    if ftps_encoding not in {"auto", "utf-8", "cp1251", "latin-1"}:
+        ftps_encoding = "auto"
     ftps_verify_tls = _to_bool(_env_or_db("FTPS_VERIFY_TLS", db) or "1")
     ftps_passive_mode = _to_bool(_env_or_db("FTPS_PASSIVE_MODE", db) or "1")
     ftps_security_mode = (_env_or_db("FTPS_SECURITY_MODE", db) or "explicit").strip().lower()
@@ -192,6 +195,7 @@ def load_settings(db: AppDatabase) -> Settings:
         ftps_username=ftps_username,
         ftps_password=ftps_password,
         ftps_remote_dir=ftps_remote_dir,
+        ftps_encoding=ftps_encoding,
         ftps_verify_tls=ftps_verify_tls,
         ftps_passive_mode=ftps_passive_mode,
         ftps_security_mode=ftps_security_mode,

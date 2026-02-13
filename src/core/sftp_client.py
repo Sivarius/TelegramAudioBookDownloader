@@ -113,6 +113,7 @@ class SFTPSync:
         self,
         local_file_path: str,
         progress_callback: Optional[Callable[[int, int], None]] = None,
+        verify_hash: bool = False,
     ) -> tuple[bool, str]:
         if not self.enabled:
             return False, "SFTP выключен."
@@ -138,7 +139,11 @@ class SFTPSync:
                 self._remote_file_names.add(file_name)
                 uploaded = True
 
-            size_match, hash_match = self.verify_remote_file(local_file_path, remote_path)
+            size_match, hash_match = self.verify_remote_file(
+                local_file_path,
+                remote_path,
+                verify_hash=verify_hash,
+            )
             verified = size_match and hash_match
             if uploaded:
                 reason = "uploaded"
@@ -149,15 +154,22 @@ class SFTPSync:
                 f"{reason}; remote={remote_path}; size_match={size_match}; hash_match={hash_match}; verified={verified}",
             )
 
-    def verify_remote_file(self, local_file_path: str, remote_file_path: str) -> tuple[bool, bool]:
+    def verify_remote_file(
+        self,
+        local_file_path: str,
+        remote_file_path: str,
+        verify_hash: bool = False,
+    ) -> tuple[bool, bool]:
         if not self._sftp:
             raise RuntimeError("SFTP не подключен.")
         local_size = os.path.getsize(local_file_path)
         remote_stat = self._sftp.stat(remote_file_path)
         size_match = int(remote_stat.st_size) == int(local_size)
-        local_hash = self._sha256_local(local_file_path)
-        remote_hash = self._sha256_remote(remote_file_path)
-        hash_match = local_hash == remote_hash
+        hash_match = True
+        if verify_hash:
+            local_hash = self._sha256_local(local_file_path)
+            remote_hash = self._sha256_remote(remote_file_path)
+            hash_match = local_hash == remote_hash
         return size_match, hash_match
 
     @staticmethod

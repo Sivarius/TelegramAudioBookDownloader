@@ -27,6 +27,7 @@ class Settings:
     ftps_username: str
     ftps_password: str
     ftps_remote_dir: str
+    ftps_encoding: str
     ftps_verify_tls: bool
     ftps_passive_mode: bool
     ftps_security_mode: str

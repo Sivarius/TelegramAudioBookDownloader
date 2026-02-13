@@ -51,6 +51,23 @@ class FTPSSync:
     def name(self) -> str:
         return "FTPS"
 
+    def _resolve_ftps_encoding(self, ftps: FTP_TLS) -> str:
+        configured = (self.settings.ftps_encoding or "auto").strip().lower()
+        if configured != "auto":
+            return configured
+        try:
+            feat = ftps.sendcmd("FEAT")
+            upper_feat = feat.upper()
+            if "UTF8" in upper_feat:
+                try:
+                    ftps.sendcmd("OPTS UTF8 ON")
+                except Exception:
+                    pass
+                return "utf-8"
+        except Exception:
+            pass
+        return "cp1251"
+
     def connect(self) -> None:
         if not self.enabled:
             return
@@ -64,14 +81,28 @@ class FTPSSync:
             context = ssl.create_default_context()
         else:
             context = ssl._create_unverified_context()
+        initial_encoding = (
+            (self.settings.ftps_encoding or "auto").strip().lower()
+            if (self.settings.ftps_encoding or "auto").strip().lower() != "auto"
+            else "utf-8"
+        )
         if self.settings.ftps_security_mode == "implicit":
-            ftps: FTP_TLS = ImplicitFTP_TLS(context=context, timeout=FTPS_TIMEOUT_SECONDS)
+            ftps: FTP_TLS = ImplicitFTP_TLS(
+                context=context,
+                timeout=FTPS_TIMEOUT_SECONDS,
+                encoding=initial_encoding,
+            )
         else:
-            ftps = FTP_TLS(context=context, timeout=FTPS_TIMEOUT_SECONDS)
+            ftps = FTP_TLS(
+                context=context,
+                timeout=FTPS_TIMEOUT_SECONDS,
+                encoding=initial_encoding,
+            )
         ftps.connect(host=self.settings.ftps_host, port=self.settings.ftps_port)
         if ftps.sock is not None:
             ftps.sock.settimeout(FTPS_TIMEOUT_SECONDS)
         ftps.login(user=self.settings.ftps_username, passwd=self.settings.ftps_password or "")
+        ftps.encoding = self._resolve_ftps_encoding(ftps)
         ftps.prot_p()
         ftps.set_pasv(bool(self.settings.ftps_passive_mode))
         self._ftps = ftps
@@ -97,10 +128,11 @@ class FTPSSync:
             tls_mode = "verify=on" if self.settings.ftps_verify_tls else "verify=off"
             transfer_mode = "passive" if self.settings.ftps_passive_mode else "active"
             secure_mode = self.settings.ftps_security_mode
+            encoding = getattr(self._ftps, "encoding", "utf-8")
             return (
                 True,
                 "FTPS: подключение установлено "
-                f"({tls_mode}; mode={transfer_mode}; security={secure_mode}). "
+                f"({tls_mode}; mode={transfer_mode}; security={secure_mode}; encoding={encoding}). "
                 f"Каталог доступен: {base_remote}",
             )
         except ssl.SSLCertVerificationError as exc:
@@ -191,6 +223,7 @@ class FTPSSync:
         self,
         local_file_path: str,
         progress_callback: Optional[Callable[[int, int], None]] = None,
+        verify_hash: bool = False,
     ) -> tuple[bool, str]:
         if not self.enabled:
             return False, "FTPS выключен."
@@ -230,7 +263,11 @@ class FTPSSync:
                 self._remote_file_names.add(file_name)
                 uploaded = True
 
-            size_match, hash_match = self.verify_remote_file(local_file_path, remote_path)
+            size_match, hash_match = self.verify_remote_file(
+                local_file_path,
+                remote_path,
+                verify_hash=verify_hash,
+            )
             verified = size_match and hash_match
             reason = "uploaded" if uploaded else "already_exists"
             return (
@@ -238,7 +275,12 @@ class FTPSSync:
                 f"{reason}; remote={remote_path}; size_match={size_match}; hash_match={hash_match}; verified={verified}",
             )
 
-    def verify_remote_file(self, local_file_path: str, remote_file_path: str) -> tuple[bool, bool]:
+    def verify_remote_file(
+        self,
+        local_file_path: str,
+        remote_file_path: str,
+        verify_hash: bool = False,
+    ) -> tuple[bool, bool]:
         if not self._ftps:
             raise RuntimeError("FTPS не подключен.")
 
@@ -246,9 +288,11 @@ class FTPSSync:
         remote_size = self._ftps.size(remote_file_path) or 0
         size_match = int(remote_size) == int(local_size)
 
-        local_hash = self._sha256_local(local_file_path)
-        remote_hash = self._sha256_remote(remote_file_path)
-        hash_match = local_hash == remote_hash
+        hash_match = True
+        if verify_hash:
+            local_hash = self._sha256_local(local_file_path)
+            remote_hash = self._sha256_remote(remote_file_path)
+            hash_match = local_hash == remote_hash
         return size_match, hash_match
 
     @staticmethod

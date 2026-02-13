@@ -190,6 +190,7 @@ docker compose -f docker-compose.prod.yml down
 - `FTPS_USERNAME` - логин
 - `FTPS_PASSWORD` - пароль
 - `FTPS_REMOTE_DIR` - базовый удаленный каталог для книг
+- `FTPS_ENCODING` - кодировка имен файлов/путей на FTPS (`auto`, `utf-8`, `cp1251`, `latin-1`)
 - `FTPS_VERIFY_TLS` - проверять TLS-сертификат сервера (`1`/`0`, по умолчанию `1`)
 - `FTPS_PASSIVE_MODE` - пассивный режим передачи (`1`/`0`, по умолчанию `1`)
 - `FTPS_SECURITY_MODE` - режим безопасности FTPS: `explicit` или `implicit` (по умолчанию `explicit`)

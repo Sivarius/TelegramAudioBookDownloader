@@ -637,6 +637,18 @@
                 </div>
                 <div>
                   <div class="label-row">
+                    <label>Кодировка FTPS</label>
+                    <span class="help" tabindex="0" data-tip="Auto пробует UTF-8, если сервер не поддерживает UTF8 переключается на cp1251.">?</span>
+                  </div>
+                  <select name="ftps_encoding">
+                    <option value="auto" {% if form.ftps_encoding == 'auto' %}selected{% endif %}>Авто</option>
+                    <option value="utf-8" {% if form.ftps_encoding == 'utf-8' %}selected{% endif %}>UTF-8</option>
+                    <option value="cp1251" {% if form.ftps_encoding == 'cp1251' %}selected{% endif %}>CP1251</option>
+                    <option value="latin-1" {% if form.ftps_encoding == 'latin-1' %}selected{% endif %}>Latin-1</option>
+                  </select>
+                </div>
+                <div>
+                  <div class="label-row">
                     <label>Безопасный режим FTPS</label>
                     <span class="help" tabindex="0" data-tip="Явный (explicit) - стандартный FTPS на 21 порту. Неявный (implicit) - TLS сразу при подключении, чаще на 990 порту.">?</span>
                   </div>
