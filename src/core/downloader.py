@@ -174,6 +174,11 @@ async def download_if_needed(
                     cleanup_local_after_remote,
                 )
                 transport = str(getattr(remote_sync, "name", "REMOTE"))
+                remote_path = ""
+                marker = "remote="
+                if marker in sftp_info:
+                    remote_path = sftp_info.split(marker, 1)[1].split(";", 1)[0].strip()
+                db.mark_remote_uploaded(channel_id, message.id, transport, remote_path)
                 if status_hook:
                     status_hook(
                         {
@@ -258,6 +263,7 @@ async def run_remote_uploader(
     db = AppDatabase(db_path)
     try:
         state = db.get_channel_state_by_ref(settings.channel)
+        channel_id = db.get_channel_id_by_ref(settings.channel)
         folder_raw = str(state.get("download_folder", "") or "").strip()
         if not folder_raw:
             fallback = settings.download_dir / sanitize_folder_name(settings.channel)
@@ -328,6 +334,14 @@ async def run_remote_uploader(
                 _upload_progress,
                 cleanup_local_after_remote,
             )
+            remote_path = ""
+            marker = "remote="
+            if marker in info:
+                remote_path = info.split(marker, 1)[1].split(";", 1)[0].strip()
+            if channel_id > 0:
+                message_id = db.get_message_id_by_file_path(channel_id, str(file_path))
+                if message_id > 0:
+                    db.mark_remote_uploaded(channel_id, message_id, transport, remote_path)
             if status_hook:
                 status_hook(
                     {
@@ -363,7 +377,19 @@ async def run_remote_uploader(
                     if stop_requested and stop_requested():
                         break
                     transfer_id = f"upload:{file_path.name}"
-                    await _run_upload_once(remote_sync, file_path, transfer_id)
+                    try:
+                        await _run_upload_once(remote_sync, file_path, transfer_id)
+                    except Exception as exc:
+                        if status_hook:
+                            status_hook(
+                                {
+                                    "event": "sftp_failed",
+                                    "message_id": transfer_id,
+                                    "file_path": str(file_path),
+                                    "reason": str(exc),
+                                    "transport": transport,
+                                }
+                            )
             finally:
                 await asyncio.to_thread(remote_sync.close)
             return

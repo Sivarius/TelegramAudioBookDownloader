@@ -49,6 +49,18 @@ class AppDatabase:
         )
         self._conn.execute(
             """
+            CREATE TABLE IF NOT EXISTS remote_uploads (
+                channel_id INTEGER NOT NULL,
+                message_id INTEGER NOT NULL,
+                transport TEXT NOT NULL,
+                remote_path TEXT,
+                uploaded_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY (channel_id, message_id, transport)
+            )
+            """
+        )
+        self._conn.execute(
+            """
             CREATE TABLE IF NOT EXISTS channel_preferences (
                 channel_ref TEXT PRIMARY KEY,
                 channel_id INTEGER,
@@ -160,12 +172,65 @@ class AppDatabase:
         row = cur.fetchone()
         return (row[0] or "").strip() if row else ""
 
+    def get_message_id_by_file_path(self, channel_id: int, file_path: str) -> int:
+        normalized = (file_path or "").strip()
+        if not normalized:
+            return 0
+        cur = self._conn.execute(
+            """
+            SELECT message_id
+            FROM downloads
+            WHERE channel_id = ? AND file_path = ?
+            """,
+            (channel_id, normalized),
+        )
+        row = cur.fetchone()
+        return int(row[0]) if row and row[0] else 0
+
     def unmark_downloaded(self, channel_id: int, message_id: int) -> None:
         self._conn.execute(
             "DELETE FROM downloads WHERE channel_id = ? AND message_id = ?",
             (channel_id, message_id),
         )
         self._conn.commit()
+
+    def mark_remote_uploaded(
+        self, channel_id: int, message_id: int, transport: str, remote_path: str = ""
+    ) -> None:
+        self._conn.execute(
+            """
+            INSERT INTO remote_uploads(channel_id, message_id, transport, remote_path, uploaded_at)
+            VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
+            ON CONFLICT(channel_id, message_id, transport) DO UPDATE SET
+                remote_path = excluded.remote_path,
+                uploaded_at = CURRENT_TIMESTAMP
+            """,
+            (int(channel_id), int(message_id), (transport or "").strip() or "REMOTE", remote_path),
+        )
+        self._conn.commit()
+
+    def is_remote_uploaded(self, channel_id: int, message_id: int) -> bool:
+        cur = self._conn.execute(
+            """
+            SELECT 1
+            FROM remote_uploads
+            WHERE channel_id = ? AND message_id = ?
+            LIMIT 1
+            """,
+            (int(channel_id), int(message_id)),
+        )
+        return cur.fetchone() is not None
+
+    def get_channel_id_by_ref(self, channel_ref: str) -> int:
+        ref = (channel_ref or "").strip()
+        if not ref:
+            return 0
+        cur = self._conn.execute(
+            "SELECT channel_id FROM channel_state WHERE channel_ref = ?",
+            (ref,),
+        )
+        row = cur.fetchone()
+        return int(row[0]) if row and row[0] else 0
 
     def get_last_downloaded_message_id(self, channel_id: int) -> int:
         cur = self._conn.execute(

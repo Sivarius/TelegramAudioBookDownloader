@@ -98,6 +98,7 @@ worker_status = {
     "upload_progress_eta_sec": 0.0,
     "file_progresses": {},
     "upload_file_progresses": {},
+    "mode": "idle",
 }
 preview_cache: list[dict] = []
 auth_status = {
@@ -841,6 +842,7 @@ async def _fetch_preview(settings: Settings, limit: int = PREVIEW_LIMIT) -> tupl
                         "title": title.replace("\n", " ")[:80],
                         "date": date_text,
                         "downloaded": is_downloaded,
+                        "remote_uploaded": db.is_remote_uploaded(channel_id, int(message.id)),
                     }
                 )
                 index += 1
@@ -903,6 +905,11 @@ def _start_worker(
         if worker_thread and worker_thread.is_alive():
             return False, "Скачивание уже запущено."
 
+        configured_concurrency = (
+            max(1, int(getattr(settings, "ftps_upload_concurrency", 1)))
+            if upload_only
+            else settings.download_concurrency
+        )
         worker_stop_event.clear()
         _set_status(
             running=True,
@@ -925,8 +932,9 @@ def _start_worker(
             upload_file_progresses={},
             current_message_id="",
             last_file="",
-            configured_concurrency=settings.download_concurrency,
-            current_concurrency=settings.download_concurrency,
+            configured_concurrency=configured_concurrency,
+            current_concurrency=configured_concurrency,
+            mode="upload" if upload_only else "download",
         )
 
         def _update_progress_item(
@@ -1220,10 +1228,10 @@ def _start_worker(
                     worker_main_task = main_task
                 loop.run_until_complete(main_task)
             except asyncio.CancelledError:
-                _set_status(message="Загрузка прервана пользователем.", running=False)
+                _set_status(message="Загрузка прервана пользователем.", running=False, mode="idle")
             except Exception as exc:
                 logging.exception("Downloader crashed")
-                _set_status(message=f"Ошибка загрузчика: {exc}", running=False)
+                _set_status(message=f"Ошибка загрузчика: {exc}", running=False, mode="idle")
             finally:
                 with worker_lock:
                     worker_loop = None
@@ -1239,7 +1247,7 @@ def _start_worker(
                         logging.exception("Failed to finalize worker event loop")
                     finally:
                         loop.close()
-                _set_status(running=False)
+                _set_status(running=False, mode="idle")
 
         worker_thread = threading.Thread(target=_target, daemon=True)
         worker_thread.start()
@@ -1675,7 +1683,7 @@ def stop_server():
             except Exception:
                 logging.exception("Failed to cancel worker task during server stop")
     monitor_stop_event.set()
-    _set_status(message="Остановка сервера...", running=False)
+    _set_status(message="Остановка сервера...", running=False, mode="idle")
 
     if worker_thread and worker_thread.is_alive():
         worker_thread.join(timeout=10)
@@ -1705,7 +1713,7 @@ def stop_download():
     global worker_thread
     form = _form_from_request()
     if not (worker_thread and worker_thread.is_alive()):
-        _set_status(running=False, message="Активная загрузка не выполняется.")
+        _set_status(running=False, mode="idle", message="Активная загрузка не выполняется.")
         return _render(form, "Активная загрузка не выполняется.")
 
     worker_stop_event.set()
@@ -1721,8 +1729,8 @@ def stop_download():
     if worker_thread and worker_thread.is_alive():
         return _render(form, "Остановка запрошена, ожидается завершение текущих задач.")
 
-    _set_status(running=False, message="Текущая загрузка остановлена.")
-    return _render(form, "Текущая загрузка остановлена.")
+    _set_status(running=False, mode="idle", message="Текущая задача остановлена.")
+    return _render(form, "Текущая задача остановлена.")
 
 
 if __name__ == "__main__":

@@ -301,6 +301,10 @@
     .btn.secondary {
       background: var(--btn-secondary);
     }
+    .btn.danger {
+      background: #dc2626;
+      color: #fff;
+    }
     .btn.compact {
       padding: 8px 12px;
       font-size: 13px;
@@ -370,6 +374,12 @@
     }
     .downloaded-ok {
       color: var(--ok);
+      font-weight: 700;
+      font-size: 16px;
+      line-height: 1;
+    }
+    .remote-ok {
+      color: #ef4444;
       font-weight: 700;
       font-size: 16px;
       line-height: 1;
@@ -488,9 +498,8 @@
             <button class="btn secondary" formaction="/check_sftp" type="submit">Проверить SFTP</button>
             <button class="btn secondary" formaction="/check_ftps" type="submit">Проверить FTPS</button>
             <button class="btn secondary" formaction="/preview" type="submit">Обновить предпросмотр</button>
-            <button class="btn" formaction="/start" type="submit">Начать скачивание</button>
-            <button class="btn secondary" formaction="/start_upload" type="submit">Начать загрузку</button>
-            <button class="btn secondary" formaction="/stop_download" type="submit">Прервать загрузку</button>
+            <button id="download-toggle-btn" class="btn" type="button">Начать скачивание</button>
+            <button id="upload-toggle-btn" class="btn secondary" type="button">Начать загрузку</button>
             <button class="btn secondary" formaction="/stop_server" type="submit">Стоп сервер</button>
           </div>
         </div>
@@ -813,6 +822,7 @@
               <th>#</th>
               <th>message_id</th>
               <th>✓</th>
+              <th>⇪</th>
               <th>Название</th>
               <th>Дата</th>
             </tr>
@@ -824,13 +834,14 @@
                 <td class="mono">{{ item.index }}</td>
                 <td class="mono">{{ item.message_id }}</td>
                 <td>{% if item.downloaded %}<span class="downloaded-ok">✓</span>{% else %}<span class="downloaded-empty">-</span>{% endif %}</td>
+                <td>{% if item.remote_uploaded %}<span class="remote-ok">✓</span>{% else %}<span class="downloaded-empty">-</span>{% endif %}</td>
                 <td>{{ item.title }}</td>
                 <td>{{ item.date }}</td>
               </tr>
               {% endfor %}
             {% else %}
               <tr>
-                <td colspan="5">Нет данных. Нажмите "Авторизоваться" или "Обновить предпросмотр".</td>
+                <td colspan="6">Нет данных. Нажмите "Авторизоваться" или "Обновить предпросмотр".</td>
               </tr>
             {% endif %}
           </tbody>
@@ -840,6 +851,49 @@
   </div>
 
   <script>
+    function submitControlAction(action) {
+      const form = document.querySelector('form');
+      if (!form) return;
+      form.setAttribute('action', action);
+      form.submit();
+    }
+
+    function updateRunButtons(s) {
+      const downloadBtn = document.getElementById('download-toggle-btn');
+      const uploadBtn = document.getElementById('upload-toggle-btn');
+      if (!downloadBtn || !uploadBtn) return;
+
+      const running = !!s.running;
+      const mode = String(s.mode || 'idle');
+      const resetButtonStyle = (btn, isSecondary) => {
+        btn.classList.remove('danger');
+        btn.classList.toggle('secondary', !!isSecondary);
+      };
+
+      if (running && mode === 'download') {
+        downloadBtn.textContent = 'Прервать скачивание';
+        downloadBtn.classList.remove('secondary');
+        downloadBtn.classList.add('danger');
+        uploadBtn.textContent = 'Начать загрузку';
+        resetButtonStyle(uploadBtn, true);
+        uploadBtn.disabled = true;
+      } else if (running && mode === 'upload') {
+        uploadBtn.textContent = 'Прервать загрузку';
+        uploadBtn.classList.remove('secondary');
+        uploadBtn.classList.add('danger');
+        downloadBtn.textContent = 'Начать скачивание';
+        resetButtonStyle(downloadBtn, false);
+        downloadBtn.disabled = true;
+      } else {
+        downloadBtn.textContent = 'Начать скачивание';
+        uploadBtn.textContent = 'Начать загрузку';
+        resetButtonStyle(downloadBtn, false);
+        resetButtonStyle(uploadBtn, true);
+        downloadBtn.disabled = false;
+        uploadBtn.disabled = false;
+      }
+    }
+
     function applyStatusPayload(s) {
       const runState = document.getElementById('run-state');
       runState.textContent = s.running ? 'Запущен' : 'Остановлен';
@@ -880,6 +934,7 @@
       document.getElementById('status-updated').textContent = `Обновлено: ${s.updated_at || ''}`;
       renderFileProgresses(s.file_progresses || {});
       renderUploadProgresses(s.upload_file_progresses || {});
+      updateRunButtons(s);
     }
 
     function renderFileProgresses(itemsMap) {
@@ -1005,6 +1060,7 @@
     });
 
     applyTheme(localStorage.getItem('theme') || 'light');
+    updateRunButtons({ running: false, mode: 'idle' });
 
     function activateTab(tabId) {
       document.querySelectorAll('.tab-panel').forEach((el) => el.classList.remove('active'));
@@ -1207,6 +1263,42 @@
       applyDownloadNewRange(!!e.target.checked);
     });
     applyDownloadNewRange(document.getElementById('download_new').checked);
+
+    document.getElementById('download-toggle-btn').addEventListener('click', async () => {
+      try {
+        const response = await fetch('/status', { cache: 'no-store' });
+        const state = await response.json();
+        const running = !!state.running;
+        const mode = String(state.mode || 'idle');
+        if (running && mode === 'download') {
+          submitControlAction('/stop_download');
+          return;
+        }
+        if (!running) {
+          submitControlAction('/start');
+        }
+      } catch (_) {
+        submitControlAction('/start');
+      }
+    });
+
+    document.getElementById('upload-toggle-btn').addEventListener('click', async () => {
+      try {
+        const response = await fetch('/status', { cache: 'no-store' });
+        const state = await response.json();
+        const running = !!state.running;
+        const mode = String(state.mode || 'idle');
+        if (running && mode === 'upload') {
+          submitControlAction('/stop_download');
+          return;
+        }
+        if (!running) {
+          submitControlAction('/start_upload');
+        }
+      } catch (_) {
+        submitControlAction('/start_upload');
+      }
+    });
 
     setInterval(() => {
       refreshDebugLogs();
