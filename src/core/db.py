@@ -111,8 +111,29 @@ class AppDatabase:
 
     def mark_downloaded(self, channel_id: int, message_id: int, file_path: str) -> None:
         self._conn.execute(
-            "INSERT OR IGNORE INTO downloads(channel_id, message_id, file_path) VALUES (?, ?, ?)",
+            """
+            INSERT INTO downloads(channel_id, message_id, file_path, downloaded_at)
+            VALUES (?, ?, ?, CURRENT_TIMESTAMP)
+            ON CONFLICT(channel_id, message_id) DO UPDATE SET
+                file_path = excluded.file_path,
+                downloaded_at = CURRENT_TIMESTAMP
+            """,
             (channel_id, message_id, file_path),
+        )
+        self._conn.commit()
+
+    def get_downloaded_file_path(self, channel_id: int, message_id: int) -> str:
+        cur = self._conn.execute(
+            "SELECT file_path FROM downloads WHERE channel_id = ? AND message_id = ?",
+            (channel_id, message_id),
+        )
+        row = cur.fetchone()
+        return (row[0] or "").strip() if row else ""
+
+    def unmark_downloaded(self, channel_id: int, message_id: int) -> None:
+        self._conn.execute(
+            "DELETE FROM downloads WHERE channel_id = ? AND message_id = ?",
+            (channel_id, message_id),
         )
         self._conn.commit()
 

@@ -14,6 +14,39 @@ from core.sftp_client import SFTPSync
 from core.telegram_client import create_telegram_client, is_audio_message, resolve_channel_entity
 
 
+def _expected_size(message: Message) -> int:
+    if message.file and getattr(message.file, "size", None):
+        try:
+            return int(message.file.size)
+        except Exception:
+            return 0
+    return 0
+
+
+def _is_local_file_valid(file_path: Path, expected_size: int) -> bool:
+    if not file_path.exists() or not file_path.is_file():
+        return False
+    if expected_size > 0:
+        return file_path.stat().st_size == expected_size
+    return file_path.stat().st_size > 0
+
+
+def _build_target_path(download_dir: Path, message: Message, existing_path: str) -> Path:
+    if existing_path:
+        return Path(existing_path)
+
+    original_name = ""
+    if message.file and getattr(message.file, "name", None):
+        original_name = str(message.file.name)
+    original_name = Path(original_name).name
+    if not original_name:
+        ext = ""
+        if message.file and getattr(message.file, "ext", None):
+            ext = str(message.file.ext or "")
+        original_name = f"message_{message.id}{ext}"
+    return download_dir / original_name
+
+
 async def download_if_needed(
     message: Message,
     db: AppDatabase,
@@ -28,21 +61,38 @@ async def download_if_needed(
     if channel_id is None:
         return
 
-    if db.already_downloaded(channel_id, message.id):
-        if status_hook:
-            status_hook({"event": "skipped", "message_id": message.id, "reason": "already_downloaded"})
-        return
-
     if not is_audio_message(message):
         if status_hook:
             status_hook({"event": "skipped", "message_id": message.id, "reason": "not_audio"})
         return
 
     download_dir.mkdir(parents=True, exist_ok=True)
+    expected_size = _expected_size(message)
+    existing_path = db.get_downloaded_file_path(channel_id, message.id)
+
+    if db.already_downloaded(channel_id, message.id):
+        file_path = Path(existing_path) if existing_path else Path()
+        if existing_path and _is_local_file_valid(file_path, expected_size):
+            if status_hook:
+                status_hook({"event": "skipped", "message_id": message.id, "reason": "already_downloaded"})
+            return
+        if status_hook:
+            status_hook({"event": "retry_incomplete", "message_id": message.id})
+        db.unmark_downloaded(channel_id, message.id)
+        if existing_path and file_path.exists():
+            try:
+                file_path.unlink()
+            except Exception:
+                logging.warning("Failed to remove incomplete file %s", file_path)
 
     try:
         if status_hook:
             status_hook({"event": "downloading", "message_id": message.id})
+        target_path = _build_target_path(download_dir, message, existing_path)
+        target_path.parent.mkdir(parents=True, exist_ok=True)
+        temp_path = target_path.with_name(f"{target_path.name}.part")
+        if temp_path.exists():
+            temp_path.unlink()
         last_percent = {"value": -1}
 
         def _progress_callback(received: int, total: int) -> None:
@@ -62,12 +112,22 @@ async def download_if_needed(
                 }
             )
 
-        file_path = await message.download_media(file=download_dir, progress_callback=_progress_callback)
-        if file_path is None:
+        downloaded_path = await message.download_media(
+            file=str(temp_path), progress_callback=_progress_callback
+        )
+        if downloaded_path is None:
             logging.warning("Audio detected but no file downloaded for message_id=%s", message.id)
             if status_hook:
                 status_hook({"event": "failed", "message_id": message.id, "reason": "empty_file_path"})
             return
+        downloaded_temp = Path(str(downloaded_path))
+        if not _is_local_file_valid(downloaded_temp, expected_size):
+            raise RuntimeError(
+                f"Incomplete download for message_id={message.id} "
+                f"(expected_size={expected_size}, got={downloaded_temp.stat().st_size if downloaded_temp.exists() else 0})"
+            )
+        downloaded_temp.replace(target_path)
+        file_path = target_path
 
         db.mark_downloaded(channel_id, message.id, str(file_path))
         db.update_channel_state(
@@ -120,10 +180,17 @@ async def download_if_needed(
             status_hook({"event": "downloaded", "message_id": message.id, "file_path": str(file_path)})
     except FloodWaitError:
         raise
-    except Exception:
+    except Exception as exc:
         logging.exception("Failed to download message_id=%s", message.id)
+        target_path = _build_target_path(download_dir, message, existing_path)
+        temp_path = target_path.with_name(f"{target_path.name}.part")
+        if temp_path.exists():
+            try:
+                temp_path.unlink()
+            except Exception:
+                logging.warning("Failed to remove temp file: %s", temp_path)
         if status_hook:
-            status_hook({"event": "failed", "message_id": message.id, "reason": "exception"})
+            status_hook({"event": "failed", "message_id": message.id, "reason": str(exc)})
 
 
 async def initial_backfill(
