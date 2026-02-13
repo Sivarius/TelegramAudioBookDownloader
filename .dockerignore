@@ -1,0 +1,11 @@
+.git
+.gitignore
+.venv
+.vscode
+__pycache__
+*.pyc
+*.pyo
+*.pyd
+downloads
+bot_data.sqlite3
+user_session.session

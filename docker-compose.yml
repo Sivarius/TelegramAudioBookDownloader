@@ -1,0 +1,15 @@
+services:
+  telegaparser:
+    build: .
+    container_name: telegaparser
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      APP_HOST: 0.0.0.0
+      APP_PORT: 8080
+      OPEN_BROWSER: 0
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./:/app

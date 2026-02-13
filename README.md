@@ -41,6 +41,20 @@ Python-скрипт для отслеживания публичного Telegra
 install_dependencies.bat
 ```
 
+## Docker Compose
+1. Заполнить `.env` (если файла нет, скопировать из `.env.example`).
+2. Запустить:
+   ```bash
+   docker compose up -d --build
+   ```
+3. Открыть:
+   - `http://127.0.0.1:8080`
+
+Остановка:
+```bash
+docker compose down
+```
+
 ## Веб-интерфейс
 - Запуск: `start_web_ui.bat`
 - При старте автоматически открывается страница `http://127.0.0.1:8080`

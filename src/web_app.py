@@ -22,8 +22,9 @@ from core.telegram_client import create_telegram_client, is_audio_message, resol
 
 
 DB_PATH = Path("bot_data.sqlite3")
-HOST = "127.0.0.1"
-PORT = 8080
+HOST = os.getenv("APP_HOST", "127.0.0.1")
+PORT = int(os.getenv("APP_PORT", "8080"))
+OPEN_BROWSER = os.getenv("OPEN_BROWSER", "1").strip().lower() in {"1", "true", "yes", "on"}
 PREVIEW_LIMIT = 300
 
 app = Flask(__name__)
@@ -837,5 +838,6 @@ def stop_server():
 
 
 if __name__ == "__main__":
-    threading.Timer(1.0, lambda: webbrowser.open(f"http://{HOST}:{PORT}")).start()
+    if OPEN_BROWSER:
+        threading.Timer(1.0, lambda: webbrowser.open(f"http://{HOST}:{PORT}")).start()
     app.run(host=HOST, port=PORT, debug=False, use_reloader=False)
