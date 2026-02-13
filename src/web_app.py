@@ -553,6 +553,54 @@ def _saved_channels_fallback(saved_channels: list[dict], message: str) -> tuple[
     return True, message, items
 
 
+def _collect_saved_channels_cached() -> tuple[bool, str, list[dict]]:
+    db = AppDatabase(DB_PATH)
+    try:
+        saved_channels = db.list_channel_preferences()
+        if not saved_channels:
+            for state in db.list_channel_states():
+                db.ensure_channel_preferences(
+                    int(state.get("channel_id") or 0),
+                    state.get("channel_ref") or str(state.get("channel_id") or ""),
+                    state.get("channel_title") or "",
+                )
+            saved_channels = db.list_channel_preferences()
+
+        if not saved_channels:
+            return True, "Сохраненные каналы отсутствуют.", []
+
+        items: list[dict] = []
+        for saved in saved_channels:
+            channel_ref = (saved.get("channel_ref") or "").strip() or str(saved.get("channel_id", 0))
+            channel_title = saved.get("channel_title") or channel_ref
+            has_new_audio = bool(saved.get("has_new_audio"))
+            status = "Есть новые аудио" if has_new_audio else "Нет новых аудио"
+            state = db.get_channel_state_by_ref(channel_ref)
+            items.append(
+                {
+                    "channel_id": int(saved.get("channel_id") or 0),
+                    "channel_ref": channel_ref,
+                    "channel_title": channel_title,
+                    "check_new": bool(saved.get("check_new")),
+                    "auto_download": bool(saved.get("auto_download")),
+                    "auto_sftp": bool(saved.get("auto_sftp")),
+                    "auto_ftps": bool(saved.get("auto_ftps")),
+                    "cleanup_local": bool(saved.get("cleanup_local")),
+                    "last_checked_at": saved.get("last_checked_at") or "",
+                    "latest_audio_id": int(saved.get("latest_audio_id") or 0),
+                    "last_message_id": int(state.get("last_message_id") or 0),
+                    "last_file_path": state.get("last_file_path") or "",
+                    "has_new_audio": has_new_audio,
+                    "status": status,
+                    "last_error": saved.get("last_error") or "",
+                    "updated_at": saved.get("updated_at") or "",
+                }
+            )
+        return True, f"Каналов в истории: {len(items)} (кэш)", items
+    finally:
+        db.close()
+
+
 async def _collect_saved_channels_status(
     settings: Settings, only_due: bool = False
 ) -> tuple[bool, str, list[dict]]:
@@ -947,6 +995,7 @@ def _start_worker(
             file_path: Optional[str] = None,
             speed_bps: Optional[float] = None,
             eta_sec: Optional[float] = None,
+            error: Optional[str] = None,
         ) -> None:
             current = dict(worker_status.get("file_progresses", {}))
             item = dict(current.get(message_id, {}))
@@ -964,6 +1013,8 @@ def _start_worker(
                 item["speed_bps"] = float(speed_bps)
             if eta_sec is not None:
                 item["eta_sec"] = float(eta_sec)
+            if error is not None:
+                item["error"] = str(error)
             item["updated_at"] = datetime.now().strftime("%H:%M:%S")
             current[message_id] = item
             if len(current) > 40:
@@ -982,6 +1033,7 @@ def _start_worker(
             file_path: Optional[str] = None,
             speed_bps: Optional[float] = None,
             eta_sec: Optional[float] = None,
+            error: Optional[str] = None,
         ) -> None:
             current = dict(worker_status.get("upload_file_progresses", {}))
             item = dict(current.get(transfer_id, {}))
@@ -999,6 +1051,8 @@ def _start_worker(
                 item["speed_bps"] = float(speed_bps)
             if eta_sec is not None:
                 item["eta_sec"] = float(eta_sec)
+            if error is not None:
+                item["error"] = str(error)
             item["updated_at"] = datetime.now().strftime("%H:%M:%S")
             current[transfer_id] = item
             if len(current) > 40:
@@ -1122,14 +1176,20 @@ def _start_worker(
                     message=f"{transport} пропуск: message_id={message_id}",
                 )
             elif event == "sftp_failed":
+                reason = str(payload.get("reason", "")).strip()
                 if not is_upload_transfer:
-                    _update_progress_item(message_id, state="sftp_failed")
-                _update_upload_progress_item(message_id, state="failed")
+                    _update_progress_item(message_id, state="sftp_failed", error=reason)
+                _update_upload_progress_item(message_id, state="failed", error=reason)
                 upload_runtime.pop(message_id, None)
                 transport = str(payload.get("transport", "SFTP"))
+                if reason:
+                    logging.error("%s failed message_id=%s reason=%s", transport, message_id, reason)
                 _set_status(
                     sftp_failed=int(worker_status.get("sftp_failed", 0)) + 1,
-                    message=f"{transport} ошибка: message_id={message_id}",
+                    message=(
+                        f"{transport} ошибка: message_id={message_id}"
+                        + (f" ({reason})" if reason else "")
+                    ),
                 )
             elif event == "uploading":
                 transfer_id = message_id or str(payload.get("file_path", "upload"))
@@ -1386,26 +1446,6 @@ def refresh_preview():
         return _render(form, str(exc))
     _store_settings(settings)
 
-    proxy_ok, proxy_message = asyncio.run(_validate_proxy(settings))
-    if settings.use_mtproxy:
-        _set_proxy_status(True, proxy_ok, proxy_message)
-        if not proxy_ok:
-            return _render(form, proxy_message)
-    else:
-        _set_proxy_status(False, True, "MTProxy не используется.")
-
-    sftp_ok, sftp_message = asyncio.run(_validate_sftp(settings))
-    if settings.use_sftp:
-        _set_sftp_status(True, sftp_ok, sftp_message)
-    else:
-        _set_sftp_status(False, True, "SFTP не используется.")
-
-    ftps_ok, ftps_message = asyncio.run(_validate_ftps(settings))
-    if settings.use_ftps:
-        _set_ftps_status(True, ftps_ok, ftps_message)
-    else:
-        _set_ftps_status(False, True, "FTPS не используется.")
-
     _upsert_current_channel_preference(settings)
     preview_ok, preview_message, items = asyncio.run(_fetch_preview(settings))
     global preview_cache
@@ -1564,13 +1604,30 @@ def check_ftps():
 def channels_status():
     form = _form_from_request()
     _store_enable_periodic_checks(bool(form["enable_periodic_checks"]))
-    try:
-        settings = _build_settings(form, require_channel=False)
-    except ValueError as exc:
-        return jsonify({"ok": False, "message": str(exc), "items": []}), 400
+    refresh = request.form.get("refresh", "0") == "1"
 
-    ok, message, items = asyncio.run(_collect_saved_channels_status(settings))
+    if refresh:
+        try:
+            settings = _build_settings(form, require_channel=False)
+        except ValueError as exc:
+            return jsonify({"ok": False, "message": str(exc), "items": []}), 400
+        ok, message, items = asyncio.run(_collect_saved_channels_status(settings))
+    else:
+        ok, message, items = _collect_saved_channels_cached()
     return jsonify({"ok": ok, "message": message, "items": items})
+
+
+@app.post("/channels_delete")
+def channels_delete():
+    channel_ref = request.form.get("channel_ref", "").strip()
+    if not channel_ref:
+        return jsonify({"ok": False, "message": "channel_ref is required"}), 400
+    db = AppDatabase(DB_PATH)
+    try:
+        db.delete_channel_data(channel_ref)
+    finally:
+        db.close()
+    return jsonify({"ok": True, "message": f"Канал удален из истории: {channel_ref}"})
 
 
 @app.post("/channels_preferences_update")

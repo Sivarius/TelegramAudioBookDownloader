@@ -431,6 +431,9 @@
         </label>
       </div>
       <div id="channel-menu-box" class="menu-box hidden">
+        <div class="btn-row" style="margin-top:0; margin-bottom:8px;">
+          <button id="channel-menu-refresh" class="btn secondary xs" type="button">Обновить статусы</button>
+        </div>
         <div id="channel-menu-status" class="sub">Загрузка списка каналов...</div>
         <div id="channel-menu-list"></div>
       </div>
@@ -952,6 +955,7 @@
         const received = Number(item.received || 0);
         const total = Number(item.total || 0);
         const state = String(item.state || '');
+        const err = escapeHtml(item.error || '');
         const speedText = formatSpeed(item.speed_bps || 0);
         const etaText = formatEta(item.eta_sec || 0);
         const row = document.createElement('tr');
@@ -962,7 +966,7 @@
             <div class="progress-meta">${percent}% (${received}/${total})</div>
             <div class="progress-meta">${speedText} | ETA: ${etaText}</div>
           </td>
-          <td>${state}</td>
+          <td>${state}${err ? `<div class="progress-meta">${err}</div>` : ''}</td>
         `;
         body.appendChild(row);
       });
@@ -989,6 +993,7 @@
         const received = Number(item.received || 0);
         const total = Number(item.total || 0);
         const state = String(item.state || '');
+        const err = escapeHtml(item.error || '');
         const speedText = formatSpeed(item.speed_bps || 0);
         const etaText = formatEta(item.eta_sec || 0);
         const row = document.createElement('tr');
@@ -999,7 +1004,7 @@
             <div class="progress-meta">${percent}% (${received}/${total})</div>
             <div class="progress-meta">${speedText} | ETA: ${etaText}</div>
           </td>
-          <td>${state}</td>
+          <td>${state}${err ? `<div class="progress-meta">${err}</div>` : ''}</td>
         `;
         body.appendChild(row);
       });
@@ -1027,6 +1032,15 @@
       const sec = total % 60;
       if (m <= 0) return `${sec}s`;
       return `${m}m ${sec}s`;
+    }
+
+    function escapeHtml(value) {
+      return String(value || '')
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
     }
 
     function connectStatusStream() {
@@ -1119,12 +1133,13 @@
       document.getElementById('use_ftps').checked = false;
     }
 
-    async function loadChannelMenu() {
+    async function loadChannelMenu(refresh = false) {
       const form = document.querySelector('form');
       const data = new FormData(form);
+      data.set('refresh', refresh ? '1' : '0');
       const status = document.getElementById('channel-menu-status');
       const list = document.getElementById('channel-menu-list');
-      status.textContent = 'Проверка каналов...';
+      status.textContent = refresh ? 'Проверка каналов...' : 'Чтение кэша каналов...';
       list.innerHTML = '';
       try {
         const response = await fetch('/channels_status', { method: 'POST', body: data });
@@ -1189,11 +1204,25 @@
             const result = await response.json();
             status.textContent = result.message || '';
           });
+          const delBtn = document.createElement('button');
+          delBtn.type = 'button';
+          delBtn.className = 'btn secondary xs';
+          delBtn.textContent = 'Удалить';
+          delBtn.addEventListener('click', async () => {
+            const data = new FormData();
+            data.set('channel_ref', item.channel_ref || '');
+            const response = await fetch('/channels_delete', { method: 'POST', body: data });
+            const result = await response.json();
+            status.textContent = result.message || '';
+            await loadChannelMenu(false);
+          });
           rightWrap.appendChild(badge);
           rightWrap.appendChild(document.createElement('br'));
           rightWrap.appendChild(btn);
           rightWrap.appendChild(document.createElement('br'));
           rightWrap.appendChild(saveBtn);
+          rightWrap.appendChild(document.createElement('br'));
+          rightWrap.appendChild(delBtn);
           row.appendChild(left);
           row.appendChild(prefWrap);
           row.appendChild(rightWrap);
@@ -1208,8 +1237,11 @@
       const box = document.getElementById('channel-menu-box');
       box.classList.toggle('hidden');
       if (!box.classList.contains('hidden')) {
-        await loadChannelMenu();
+        await loadChannelMenu(false);
       }
+    });
+    document.getElementById('channel-menu-refresh').addEventListener('click', async () => {
+      await loadChannelMenu(true);
     });
 
     async function refreshDebugLogs() {

@@ -171,7 +171,10 @@ async def download_if_needed(
                     remote_sync.upload_file_if_needed,
                     str(file_path),
                     _upload_progress,
-                    cleanup_local_after_remote,
+                    (
+                        cleanup_local_after_remote
+                        and str(getattr(remote_sync, "name", "")).upper() != "FTPS"
+                    ),
                 )
                 transport = str(getattr(remote_sync, "name", "REMOTE"))
                 remote_path = ""
@@ -293,6 +296,7 @@ async def run_remote_uploader(
             else settings.cleanup_local_after_ftps
         )
         concurrency = max(1, int(getattr(settings, "ftps_upload_concurrency", 1)))
+        max_retries = 3
         if status_hook:
             status_hook(
                 {
@@ -328,12 +332,46 @@ async def run_remote_uploader(
                     }
                 )
 
-            uploaded, info = await asyncio.to_thread(
-                sync_client.upload_file_if_needed,
-                str(file_path),
-                _upload_progress,
-                cleanup_local_after_remote,
-            )
+            last_exc: Optional[Exception] = None
+            uploaded = False
+            info = ""
+            for attempt in range(1, max_retries + 1):
+                try:
+                    uploaded, info = await asyncio.to_thread(
+                        sync_client.upload_file_if_needed,
+                        str(file_path),
+                        _upload_progress,
+                        (
+                            cleanup_local_after_remote
+                            and str(getattr(sync_client, "name", "")).upper() != "FTPS"
+                        ),
+                    )
+                    break
+                except Exception as exc:
+                    last_exc = exc
+                    logging.warning(
+                        "Upload failed transfer_id=%s attempt=%s/%s file=%s error=%s",
+                        transfer_id,
+                        attempt,
+                        max_retries,
+                        file_path,
+                        exc,
+                    )
+                    if attempt >= max_retries:
+                        raise RuntimeError(
+                            f"upload failed after {max_retries} attempts: {exc}"
+                        ) from exc
+                    try:
+                        await asyncio.to_thread(sync_client.close)
+                    except Exception:
+                        pass
+                    await asyncio.sleep(min(6, 2 * attempt))
+                    await asyncio.to_thread(sync_client.connect)
+                    await asyncio.to_thread(sync_client.prepare_channel_dir, channel_folder)
+            if last_exc and not info:
+                raise RuntimeError(
+                    f"upload failed after {max_retries} attempts: {last_exc}"
+                ) from last_exc
             remote_path = ""
             marker = "remote="
             if marker in info:
@@ -380,6 +418,9 @@ async def run_remote_uploader(
                     try:
                         await _run_upload_once(remote_sync, file_path, transfer_id)
                     except Exception as exc:
+                        logging.exception(
+                            "Upload failed transfer_id=%s file=%s", transfer_id, file_path
+                        )
                         if status_hook:
                             status_hook(
                                 {
@@ -416,6 +457,9 @@ async def run_remote_uploader(
                     try:
                         await _run_upload_once(sync_client, file_path, transfer_id)
                     except Exception as exc:
+                        logging.exception(
+                            "Upload failed transfer_id=%s file=%s", transfer_id, file_path
+                        )
                         if status_hook:
                             status_hook(
                                 {

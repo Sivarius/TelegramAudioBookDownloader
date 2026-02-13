@@ -513,3 +513,28 @@ class AppDatabase:
             "last_file_path": row[1] or "",
             "download_folder": row[2] or "",
         }
+
+    def delete_channel_data(self, channel_ref: str) -> None:
+        ref = (channel_ref or "").strip()
+        if not ref:
+            return
+        cur = self._conn.execute(
+            "SELECT channel_id FROM channel_state WHERE channel_ref = ?",
+            (ref,),
+        )
+        row = cur.fetchone()
+        channel_id = int(row[0]) if row and row[0] else 0
+        if channel_id <= 0:
+            cur = self._conn.execute(
+                "SELECT channel_id FROM channel_preferences WHERE channel_ref = ?",
+                (ref,),
+            )
+            row = cur.fetchone()
+            channel_id = int(row[0]) if row and row[0] else 0
+
+        self._conn.execute("DELETE FROM channel_preferences WHERE channel_ref = ?", (ref,))
+        self._conn.execute("DELETE FROM channel_state WHERE channel_ref = ?", (ref,))
+        if channel_id > 0:
+            self._conn.execute("DELETE FROM downloads WHERE channel_id = ?", (channel_id,))
+            self._conn.execute("DELETE FROM remote_uploads WHERE channel_id = ?", (channel_id,))
+        self._conn.commit()
