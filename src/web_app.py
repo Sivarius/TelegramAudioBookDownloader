@@ -1,6 +1,5 @@
 import asyncio
 from collections import deque
-import json
 import logging
 import os
 import sqlite3
@@ -12,7 +11,7 @@ from dataclasses import replace
 from pathlib import Path
 from typing import Optional
 
-from flask import Flask, Response, jsonify, render_template, request, stream_with_context
+from flask import Flask, render_template, request
 from telethon import utils
 from telethon.errors import PhoneCodeExpiredError, PhoneCodeInvalidError, SessionPasswordNeededError
 
@@ -38,6 +37,7 @@ from web_form_ops import (
     _validate_proxy,
     _validate_sftp,
 )
+from web_routes_basic import register_basic_routes
 
 
 DB_PATH = Path(os.getenv("DB_PATH", "bot_data.sqlite3"))
@@ -1106,40 +1106,47 @@ def _render(form: dict, message: str = "", need_code: bool = False, need_passwor
     )
 
 
-@app.get("/")
-def index():
-    return _render(_load_saved_form())
+def _register_basic_routes() -> None:
+    register_basic_routes(
+        app,
+        {
+            "db_path": DB_PATH,
+            "render": _render,
+            "load_saved_form": _load_saved_form,
+            "status_payload": _status_payload,
+            "status_cond": status_cond,
+            "get_status_version": lambda: status_version,
+            "debug_log_lock": debug_log_lock,
+            "debug_log_buffer": debug_log_buffer,
+            "form_from_request": _form_from_request,
+            "store_enable_periodic_checks": _store_enable_periodic_checks,
+            "build_settings": _build_settings,
+            "store_settings": _store_settings,
+            "upsert_current_channel_preference": _upsert_current_channel_preference,
+            "fetch_preview": _fetch_preview,
+            "get_preview_cache": lambda: preview_cache,
+            "set_preview_cache": lambda value: _set_preview_cache(value),
+            "proxy_status": proxy_status,
+            "sftp_status": sftp_status,
+            "ftps_status": ftps_status,
+            "validate_sftp": _validate_sftp,
+            "set_sftp_status": _set_sftp_status,
+            "validate_ftps": _validate_ftps,
+            "set_ftps_status": _set_ftps_status,
+            "collect_saved_channels_status": _collect_saved_channels_status,
+            "collect_saved_channels_cached": _collect_saved_channels_cached,
+            "safe_int": _safe_int,
+            "resolve_last_downloaded_message_id": _resolve_last_downloaded_message_id,
+        },
+    )
 
 
-@app.get("/status")
-def status():
-    return jsonify(_status_payload())
+def _set_preview_cache(value: list[dict]) -> None:
+    global preview_cache
+    preview_cache = value
 
 
-@app.get("/status_stream")
-def status_stream():
-    @stream_with_context
-    def _event_stream():
-        last_seen = -1
-        while True:
-            with status_cond:
-                if last_seen == -1:
-                    payload = _status_payload()
-                    last_seen = status_version
-                else:
-                    status_cond.wait(timeout=25)
-                    payload = _status_payload()
-                    last_seen = status_version
-            yield f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
-
-    return Response(_event_stream(), mimetype="text/event-stream")
-
-
-@app.get("/debug_logs")
-def debug_logs():
-    with debug_log_lock:
-        lines = list(debug_log_buffer)
-    return jsonify({"lines": lines, "count": len(lines)})
+_register_basic_routes()
 
 
 @app.post("/authorize")
@@ -1208,25 +1215,6 @@ def authorize():
         form,
         f"{proxy_status['message']} {sftp_status['message']} {ftps_status['message']} {auth_message} {preview_message}",
     )
-
-
-@app.post("/preview")
-def refresh_preview():
-    form = _form_from_request()
-    _store_enable_periodic_checks(bool(form["enable_periodic_checks"]))
-
-    try:
-        settings = _build_settings(form)
-    except ValueError as exc:
-        return _render(form, str(exc))
-    _store_settings(settings)
-
-    _upsert_current_channel_preference(settings)
-    preview_ok, preview_message, items = asyncio.run(_fetch_preview(settings))
-    global preview_cache
-    preview_cache = items if preview_ok else []
-
-    return _render(form, f"{proxy_status['message']} {sftp_status['message']} {ftps_status['message']} {preview_message}")
 
 
 @app.post("/start")
@@ -1339,168 +1327,6 @@ def start_upload():
     if started:
         return _render(form, f"{sftp_status['message']} {ftps_status['message']} {start_message}")
     return _render(form, start_message)
-
-
-@app.post("/check_sftp")
-def check_sftp():
-    form = _form_from_request()
-    try:
-        settings = _build_settings(form, require_channel=False)
-    except ValueError as exc:
-        return _render(form, str(exc))
-    _store_settings(settings)
-
-    sftp_ok, sftp_message = asyncio.run(_validate_sftp(settings))
-    if settings.use_sftp:
-        _set_sftp_status(True, sftp_ok, sftp_message)
-    else:
-        _set_sftp_status(False, True, "SFTP не используется.")
-    return _render(form, sftp_status["message"])
-
-
-@app.post("/check_ftps")
-def check_ftps():
-    form = _form_from_request()
-    try:
-        settings = _build_settings(form, require_channel=False)
-    except ValueError as exc:
-        return _render(form, str(exc))
-    _store_settings(settings)
-
-    ftps_ok, ftps_message = asyncio.run(_validate_ftps(settings))
-    if settings.use_ftps:
-        _set_ftps_status(True, ftps_ok, ftps_message)
-    else:
-        _set_ftps_status(False, True, "FTPS не используется.")
-    return _render(form, ftps_status["message"])
-
-
-@app.post("/channels_status")
-def channels_status():
-    form = _form_from_request()
-    _store_enable_periodic_checks(bool(form["enable_periodic_checks"]))
-    refresh = request.form.get("refresh", "0") == "1"
-
-    if refresh:
-        try:
-            settings = _build_settings(form, require_channel=False)
-        except ValueError as exc:
-            return jsonify({"ok": False, "message": str(exc), "items": []}), 400
-        ok, message, items = asyncio.run(_collect_saved_channels_status(settings))
-    else:
-        ok, message, items = _collect_saved_channels_cached()
-    return jsonify({"ok": ok, "message": message, "items": items})
-
-
-@app.post("/channels_delete")
-def channels_delete():
-    channel_ref = request.form.get("channel_ref", "").strip()
-    if not channel_ref:
-        return jsonify({"ok": False, "message": "channel_ref is required"}), 400
-    db = AppDatabase(DB_PATH)
-    try:
-        db.delete_channel_data(channel_ref)
-    finally:
-        db.close()
-    return jsonify({"ok": True, "message": f"Канал удален из истории: {channel_ref}"})
-
-
-@app.post("/channels_preferences_update")
-def channels_preferences_update():
-    form = _form_from_request()
-    _store_enable_periodic_checks(bool(form["enable_periodic_checks"]))
-    try:
-        settings = _build_settings(form, require_channel=False)
-    except ValueError as exc:
-        return jsonify({"ok": False, "message": str(exc)}), 400
-
-    channel_ref = request.form.get("channel_ref", "").strip()
-    channel_id = _safe_int(request.form.get("channel_id", "0"), 0)
-    channel_title = request.form.get("channel_title", "").strip()
-    check_new = request.form.get("check_new") == "1"
-    auto_download = request.form.get("auto_download") == "1"
-    auto_sftp = request.form.get("auto_sftp") == "1"
-    auto_ftps = request.form.get("auto_ftps") == "1"
-    cleanup_local = request.form.get("cleanup_local") == "1"
-
-    if not channel_ref:
-        return jsonify({"ok": False, "message": "channel_ref is required"}), 400
-
-    db = AppDatabase(DB_PATH)
-    try:
-        db.upsert_channel_preferences(
-            channel_ref=channel_ref,
-            channel_id=channel_id,
-            channel_title=channel_title or channel_ref,
-            check_new=check_new,
-            auto_download=auto_download,
-            auto_sftp=auto_sftp,
-            auto_ftps=auto_ftps,
-            cleanup_local=cleanup_local,
-        )
-    finally:
-        db.close()
-
-    # Update global default cleanup option for manual runs.
-    settings = replace(
-        settings,
-        cleanup_local_after_sftp=cleanup_local,
-        cleanup_local_after_ftps=cleanup_local,
-    )
-    _store_settings(settings)
-    return jsonify({"ok": True, "message": "Настройки канала сохранены."})
-
-
-@app.post("/suggest_new_range")
-def suggest_new_range():
-    form = _form_from_request()
-    try:
-        settings = _build_settings(form, require_channel=True)
-    except ValueError as exc:
-        return jsonify({"ok": False, "message": str(exc)}), 400
-
-    global preview_cache
-    if not preview_cache:
-        ok_preview, _, items = asyncio.run(_fetch_preview(settings))
-        preview_cache = items if ok_preview else []
-
-    if not preview_cache:
-        return jsonify({"ok": False, "message": "Нет данных предпросмотра. Нажмите Обновить предпросмотр."}), 200
-
-    try:
-        last_downloaded_id = asyncio.run(_resolve_last_downloaded_message_id(settings))
-    except Exception as exc:
-        return jsonify({"ok": False, "message": f"Не удалось вычислить диапазон новых: {exc}"}), 200
-
-    from_index = 0
-    to_index = int(len(preview_cache))
-    for item in preview_cache:
-        if int(item.get("message_id", 0)) > int(last_downloaded_id):
-            from_index = int(item.get("index", 0))
-            break
-
-    if from_index <= 0:
-        return jsonify(
-            {
-                "ok": True,
-                "message": "Новых глав не найдено.",
-                "from_index": "",
-                "to_index": "",
-                "has_new": False,
-                "last_downloaded_id": int(last_downloaded_id),
-            }
-        )
-
-    return jsonify(
-        {
-            "ok": True,
-            "message": "Диапазон новых глав определен.",
-            "from_index": str(from_index),
-            "to_index": str(to_index),
-            "has_new": True,
-            "last_downloaded_id": int(last_downloaded_id),
-        }
-    )
 
 
 @app.post("/stop_server")
