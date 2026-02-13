@@ -1221,6 +1221,7 @@ def refresh_preview():
         settings = _build_settings(form)
     except ValueError as exc:
         return _render(form, str(exc))
+    _store_settings(settings)
 
     proxy_ok, proxy_message = asyncio.run(_validate_proxy(settings))
     if settings.use_mtproxy:
@@ -1321,6 +1322,7 @@ def check_sftp():
         settings = _build_settings(form, require_channel=False)
     except ValueError as exc:
         return _render(form, str(exc))
+    _store_settings(settings)
 
     sftp_ok, sftp_message = asyncio.run(_validate_sftp(settings))
     if settings.use_sftp:
@@ -1337,6 +1339,7 @@ def check_ftps():
         settings = _build_settings(form, require_channel=False)
     except ValueError as exc:
         return _render(form, str(exc))
+    _store_settings(settings)
 
     ftps_ok, ftps_message = asyncio.run(_validate_ftps(settings))
     if settings.use_ftps:
