@@ -307,6 +307,8 @@ async def run_remote_uploader(
             )
 
         async def _run_upload_once(sync_client: object, file_path: Path, transfer_id: str) -> None:
+            if stop_requested and stop_requested():
+                raise asyncio.CancelledError()
             if status_hook:
                 status_hook(
                     {
@@ -336,18 +338,25 @@ async def run_remote_uploader(
             uploaded = False
             info = ""
             for attempt in range(1, max_retries + 1):
+                if stop_requested and stop_requested():
+                    raise asyncio.CancelledError()
                 try:
-                    uploaded, info = await asyncio.to_thread(
-                        sync_client.upload_file_if_needed,
-                        str(file_path),
-                        _upload_progress,
-                        (
-                            cleanup_local_after_remote
-                            and str(getattr(sync_client, "name", "")).upper() != "FTPS"
+                    uploaded, info = await asyncio.wait_for(
+                        asyncio.to_thread(
+                            sync_client.upload_file_if_needed,
+                            str(file_path),
+                            _upload_progress,
+                            (
+                                cleanup_local_after_remote
+                                and str(getattr(sync_client, "name", "")).upper() != "FTPS"
+                            ),
                         ),
+                        timeout=75,
                     )
                     break
                 except Exception as exc:
+                    if stop_requested and stop_requested():
+                        raise asyncio.CancelledError() from exc
                     last_exc = exc
                     logging.warning(
                         "Upload failed transfer_id=%s attempt=%s/%s file=%s error=%s",
@@ -365,9 +374,16 @@ async def run_remote_uploader(
                         await asyncio.to_thread(sync_client.close)
                     except Exception:
                         pass
+                    if stop_requested and stop_requested():
+                        raise asyncio.CancelledError() from exc
                     await asyncio.sleep(min(6, 2 * attempt))
-                    await asyncio.to_thread(sync_client.connect)
-                    await asyncio.to_thread(sync_client.prepare_channel_dir, channel_folder)
+                    if stop_requested and stop_requested():
+                        raise asyncio.CancelledError() from exc
+                    await asyncio.wait_for(asyncio.to_thread(sync_client.connect), timeout=15)
+                    await asyncio.wait_for(
+                        asyncio.to_thread(sync_client.prepare_channel_dir, channel_folder),
+                        timeout=15,
+                    )
             if last_exc and not info:
                 raise RuntimeError(
                     f"upload failed after {max_retries} attempts: {last_exc}"
@@ -443,8 +459,11 @@ async def run_remote_uploader(
 
         async def _worker(worker_index: int) -> None:
             sync_client = sync_cls(settings)
-            await asyncio.to_thread(sync_client.connect)
-            await asyncio.to_thread(sync_client.prepare_channel_dir, channel_folder)
+            await asyncio.wait_for(asyncio.to_thread(sync_client.connect), timeout=15)
+            await asyncio.wait_for(
+                asyncio.to_thread(sync_client.prepare_channel_dir, channel_folder),
+                timeout=15,
+            )
             try:
                 while True:
                     if stop_requested and stop_requested():
@@ -456,6 +475,8 @@ async def run_remote_uploader(
                     transfer_id = f"upload:{worker_index}:{file_path.name}"
                     try:
                         await _run_upload_once(sync_client, file_path, transfer_id)
+                    except asyncio.CancelledError:
+                        return
                     except Exception as exc:
                         logging.exception(
                             "Upload failed transfer_id=%s file=%s", transfer_id, file_path

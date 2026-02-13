@@ -9,7 +9,7 @@ from typing import Callable, Optional
 
 from core.models import Settings
 
-FTPS_TIMEOUT_SECONDS = 30
+FTPS_TIMEOUT_SECONDS = 15
 
 
 class ImplicitFTP_TLS(FTP_TLS):
