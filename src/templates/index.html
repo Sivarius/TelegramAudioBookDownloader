@@ -269,6 +269,15 @@
       margin-top: 4px;
       margin-bottom: 6px;
     }
+    .check-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(220px, 1fr));
+      gap: 6px 16px;
+      align-items: center;
+    }
+    .check-grid .check-row {
+      margin: 0;
+    }
     .check-row input[type="checkbox"] {
       width: auto;
       margin: 0;
@@ -379,6 +388,9 @@
       .grid {
         grid-template-columns: 1fr;
       }
+      .check-grid {
+        grid-template-columns: 1fr;
+      }
       .field-sm input {
         max-width: 100%;
       }
@@ -430,35 +442,13 @@
               </div>
               <input name="download_concurrency" value="{{ form.download_concurrency }}" placeholder="3">
             </div>
-            <div class="full">
-              <div class="check-row">
-                <input id="remember_me" type="checkbox" name="remember_me" {% if form.remember_me %}checked{% endif %}>
-                <label for="remember_me">Запомнить меня</label>
-              </div>
-            </div>
-            <div class="full">
-              <div class="check-row">
-                <input id="use_mtproxy" type="checkbox" name="use_mtproxy" {% if form.use_mtproxy %}checked{% endif %}>
-                <label for="use_mtproxy">Использовать mtproxy</label>
-              </div>
-            </div>
-            <div class="full">
-              <div class="check-row">
-                <input id="use_sftp" type="checkbox" name="use_sftp" {% if form.use_sftp %}checked{% endif %}>
-                <label for="use_sftp">Загружать на SFTP</label>
-              </div>
-            </div>
-            <div class="full">
-              <div class="check-row">
-                <input id="use_ftps" type="checkbox" name="use_ftps" {% if form.use_ftps %}checked{% endif %}>
-                <label for="use_ftps">Загружать на FTPS</label>
-              </div>
-            </div>
-            <div class="full">
-              <div class="check-row">
-                <input id="enable_periodic_checks" type="checkbox" name="enable_periodic_checks" {% if form.enable_periodic_checks %}checked{% endif %}>
-                <label for="enable_periodic_checks">Периодически проверять новые главы</label>
-              </div>
+            <div class="full check-grid">
+              <label class="check-row"><input id="remember_me" type="checkbox" name="remember_me" {% if form.remember_me %}checked{% endif %}> <span>Запомнить меня</span></label>
+              <label class="check-row"><input id="use_mtproxy" type="checkbox" name="use_mtproxy" {% if form.use_mtproxy %}checked{% endif %}> <span>Использовать mtproxy</span></label>
+              <label class="check-row"><input id="use_sftp" type="checkbox" name="use_sftp" {% if form.use_sftp %}checked{% endif %}> <span>Загружать на SFTP</span></label>
+              <label class="check-row"><input id="use_ftps" type="checkbox" name="use_ftps" {% if form.use_ftps %}checked{% endif %}> <span>Загружать на FTPS</span></label>
+              <label class="check-row"><input id="enable_periodic_checks" type="checkbox" name="enable_periodic_checks" {% if form.enable_periodic_checks %}checked{% endif %}> <span>Периодически проверять новые главы</span></label>
+              <label class="check-row"><input id="download_new" type="checkbox" name="download_new" {% if form.download_new %}checked{% endif %}> <span>Скачать новые</span></label>
             </div>
             <div class="full">
               <div class="index-inline">
@@ -476,12 +466,6 @@
                   </div>
                   <input id="to_index" name="to_index" value="{{ form.to_index }}" placeholder="50">
                 </div>
-              </div>
-            </div>
-            <div class="full">
-              <div class="check-row">
-                <input id="download_new" type="checkbox" name="download_new" {% if form.download_new %}checked{% endif %}>
-                <label for="download_new">Скачать новые</label>
               </div>
             </div>
           </div>
