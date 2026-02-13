@@ -1,5 +1,6 @@
 import asyncio
 from collections import deque
+import json
 import logging
 import os
 import threading
@@ -10,7 +11,7 @@ from dataclasses import replace
 from pathlib import Path
 from typing import Optional
 
-from flask import Flask, jsonify, render_template, request
+from flask import Flask, Response, jsonify, render_template, request, stream_with_context
 from telethon import utils
 from telethon.errors import PhoneCodeExpiredError, PhoneCodeInvalidError, SessionPasswordNeededError
 
@@ -66,6 +67,9 @@ monitor_thread: Optional[threading.Thread] = None
 monitor_stop_event = threading.Event()
 runtime_session_name = ""
 runtime_remember_me = True
+status_lock = threading.Lock()
+status_cond = threading.Condition(status_lock)
+status_version = 0
 worker_status = {
     "running": False,
     "message": "Ожидание запуска.",
@@ -80,6 +84,9 @@ worker_status = {
     "sftp_uploaded": 0,
     "sftp_skipped": 0,
     "sftp_failed": 0,
+    "progress_percent": 0,
+    "progress_received": 0,
+    "progress_total": 0,
 }
 preview_cache: list[dict] = []
 auth_status = {
@@ -102,28 +109,61 @@ sftp_status = {
 
 
 def _set_status(**kwargs) -> None:
+    global status_version
     worker_status.update(kwargs)
     worker_status["updated_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    with status_cond:
+        status_version += 1
+        status_cond.notify_all()
 
 
 def _set_auth_status(authorized: bool, message: str) -> None:
+    global status_version
     auth_status["authorized"] = authorized
     auth_status["message"] = message
     auth_status["updated_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    with status_cond:
+        status_version += 1
+        status_cond.notify_all()
 
 
 def _set_proxy_status(enabled: bool, available: bool, message: str) -> None:
+    global status_version
     proxy_status["enabled"] = enabled
     proxy_status["available"] = available
     proxy_status["message"] = message
     proxy_status["updated_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    with status_cond:
+        status_version += 1
+        status_cond.notify_all()
 
 
 def _set_sftp_status(enabled: bool, available: bool, message: str) -> None:
+    global status_version
     sftp_status["enabled"] = enabled
     sftp_status["available"] = available
     sftp_status["message"] = message
     sftp_status["updated_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    with status_cond:
+        status_version += 1
+        status_cond.notify_all()
+
+
+def _status_payload() -> dict:
+    return {
+        **worker_status,
+        "auth_authorized": auth_status["authorized"],
+        "auth_message": auth_status["message"],
+        "auth_updated_at": auth_status["updated_at"],
+        "proxy_enabled": proxy_status["enabled"],
+        "proxy_available": proxy_status["available"],
+        "proxy_message": proxy_status["message"],
+        "proxy_updated_at": proxy_status["updated_at"],
+        "sftp_enabled": sftp_status["enabled"],
+        "sftp_available": sftp_status["available"],
+        "sftp_message": sftp_status["message"],
+        "sftp_updated_at": sftp_status["updated_at"],
+    }
 
 
 def _safe_int(value: str, default: int = 0) -> int:
@@ -674,6 +714,9 @@ def _start_worker(
             sftp_uploaded=0,
             sftp_skipped=0,
             sftp_failed=0,
+            progress_percent=0,
+            progress_received=0,
+            progress_total=0,
             current_message_id="",
             last_file="",
             configured_concurrency=settings.download_concurrency,
@@ -684,12 +727,26 @@ def _start_worker(
             event = payload.get("event", "")
             message_id = str(payload.get("message_id", ""))
             if event == "downloading":
-                _set_status(current_message_id=message_id, message=f"Скачивание message_id={message_id}")
+                _set_status(
+                    current_message_id=message_id,
+                    message=f"Скачивание message_id={message_id}",
+                    progress_percent=0,
+                    progress_received=0,
+                    progress_total=0,
+                )
+            elif event == "progress":
+                _set_status(
+                    current_message_id=message_id,
+                    progress_percent=int(payload.get("percent", 0)),
+                    progress_received=int(payload.get("received", 0)),
+                    progress_total=int(payload.get("total", 0)),
+                )
             elif event == "downloaded":
                 _set_status(
                     downloaded=int(worker_status.get("downloaded", 0)) + 1,
                     current_message_id=message_id,
                     last_file=str(payload.get("file_path", "")),
+                    progress_percent=100,
                     message=f"Скачан message_id={message_id}",
                 )
             elif event == "failed":
@@ -775,22 +832,26 @@ def index():
 
 @app.get("/status")
 def status():
-    return jsonify(
-        {
-            **worker_status,
-            "auth_authorized": auth_status["authorized"],
-            "auth_message": auth_status["message"],
-            "auth_updated_at": auth_status["updated_at"],
-            "proxy_enabled": proxy_status["enabled"],
-            "proxy_available": proxy_status["available"],
-            "proxy_message": proxy_status["message"],
-            "proxy_updated_at": proxy_status["updated_at"],
-            "sftp_enabled": sftp_status["enabled"],
-            "sftp_available": sftp_status["available"],
-            "sftp_message": sftp_status["message"],
-            "sftp_updated_at": sftp_status["updated_at"],
-        }
-    )
+    return jsonify(_status_payload())
+
+
+@app.get("/status_stream")
+def status_stream():
+    @stream_with_context
+    def _event_stream():
+        last_seen = -1
+        while True:
+            with status_cond:
+                if last_seen == -1:
+                    payload = _status_payload()
+                    last_seen = status_version
+                else:
+                    status_cond.wait(timeout=25)
+                    payload = _status_payload()
+                    last_seen = status_version
+            yield f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
+
+    return Response(_event_stream(), mimetype="text/event-stream")
 
 
 @app.get("/debug_logs")

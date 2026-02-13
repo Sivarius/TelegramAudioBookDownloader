@@ -572,6 +572,9 @@
         <div id="status-concurrency">
           Параллельность: {{ status.current_concurrency }} / {{ status.configured_concurrency }}
         </div>
+        <div id="status-progress">
+          Прогресс файла: {{ status.progress_percent }}% ({{ status.progress_received }} / {{ status.progress_total }} байт)
+        </div>
         <div id="status-current">Текущий message_id: {{ status.current_message_id }}</div>
         <div id="status-file">Последний файл: {{ status.last_file }}</div>
         <div id="status-updated">Обновлено: {{ status.updated_at }}</div>
@@ -587,7 +590,7 @@
         {% endif %}
       </div>
 
-      <p class="note">Статус скачивания обновляется автоматически каждые 2 секунды.</p>
+      <p class="note">Статус скачивания обновляется через серверный поток (SSE) без постоянного polling.</p>
       <div id="debug-box" class="debug-box">
         <pre id="debug-log" class="debug-log">Debug disabled.</pre>
       </div>
@@ -629,44 +632,53 @@
   </div>
 
   <script>
-    async function refreshStatus() {
-      try {
-        const response = await fetch('/status', { cache: 'no-store' });
-        if (!response.ok) {
-          return;
-        }
-        const s = await response.json();
+    function applyStatusPayload(s) {
+      const runState = document.getElementById('run-state');
+      runState.textContent = s.running ? 'Запущен' : 'Остановлен';
+      runState.className = s.running ? 'run' : 'stop';
 
-        const runState = document.getElementById('run-state');
-        runState.textContent = s.running ? 'Запущен' : 'Остановлен';
-        runState.className = s.running ? 'run' : 'stop';
-
-        document.getElementById('status-message').textContent = `Сообщение: ${s.message || ''}`;
-        const authText = s.auth_authorized ? 'успешно' : 'не выполнена';
-        const authClass = s.auth_authorized ? 'run' : 'stop';
-        document.getElementById('status-auth').innerHTML = `Авторизация: <span class="${authClass}">${authText}</span> (${s.auth_message || ''})`;
-        let proxyText = 'не используется';
-        let proxyClass = 'stop';
-        if (s.proxy_enabled) {
-          proxyText = s.proxy_available ? 'подключение установлено' : 'ошибка подключения';
-          proxyClass = s.proxy_available ? 'run' : 'stop';
-        }
-        document.getElementById('status-proxy').innerHTML = `MTProxy: <span class="${proxyClass}">${proxyText}</span> (${s.proxy_message || ''})`;
-        let sftpText = 'не используется';
-        let sftpClass = 'stop';
-        if (s.sftp_enabled) {
-          sftpText = s.sftp_available ? 'подключение установлено' : 'ошибка подключения';
-          sftpClass = s.sftp_available ? 'run' : 'stop';
-        }
-        document.getElementById('status-sftp').innerHTML = `SFTP: <span class="${sftpClass}">${sftpText}</span> (${s.sftp_message || ''})`;
-        document.getElementById('status-counters').textContent = `Скачано: ${s.downloaded || 0} | Ошибок: ${s.failed || 0} | Пропущено: ${s.skipped || 0}`;
-        document.getElementById('status-sftp-counters').textContent = `SFTP: загружено ${s.sftp_uploaded || 0} | пропущено ${s.sftp_skipped || 0} | ошибок ${s.sftp_failed || 0}`;
-        document.getElementById('status-concurrency').textContent = `Параллельность: ${s.current_concurrency || 1} / ${s.configured_concurrency || 1}`;
-        document.getElementById('status-current').textContent = `Текущий message_id: ${s.current_message_id || ''}`;
-        document.getElementById('status-file').textContent = `Последний файл: ${s.last_file || ''}`;
-        document.getElementById('status-updated').textContent = `Обновлено: ${s.updated_at || ''}`;
-      } catch (_) {
+      document.getElementById('status-message').textContent = `Сообщение: ${s.message || ''}`;
+      const authText = s.auth_authorized ? 'успешно' : 'не выполнена';
+      const authClass = s.auth_authorized ? 'run' : 'stop';
+      document.getElementById('status-auth').innerHTML = `Авторизация: <span class="${authClass}">${authText}</span> (${s.auth_message || ''})`;
+      let proxyText = 'не используется';
+      let proxyClass = 'stop';
+      if (s.proxy_enabled) {
+        proxyText = s.proxy_available ? 'подключение установлено' : 'ошибка подключения';
+        proxyClass = s.proxy_available ? 'run' : 'stop';
       }
+      document.getElementById('status-proxy').innerHTML = `MTProxy: <span class="${proxyClass}">${proxyText}</span> (${s.proxy_message || ''})`;
+      let sftpText = 'не используется';
+      let sftpClass = 'stop';
+      if (s.sftp_enabled) {
+        sftpText = s.sftp_available ? 'подключение установлено' : 'ошибка подключения';
+        sftpClass = s.sftp_available ? 'run' : 'stop';
+      }
+      document.getElementById('status-sftp').innerHTML = `SFTP: <span class="${sftpClass}">${sftpText}</span> (${s.sftp_message || ''})`;
+      document.getElementById('status-counters').textContent = `Скачано: ${s.downloaded || 0} | Ошибок: ${s.failed || 0} | Пропущено: ${s.skipped || 0}`;
+      document.getElementById('status-sftp-counters').textContent = `SFTP: загружено ${s.sftp_uploaded || 0} | пропущено ${s.sftp_skipped || 0} | ошибок ${s.sftp_failed || 0}`;
+      document.getElementById('status-concurrency').textContent = `Параллельность: ${s.current_concurrency || 1} / ${s.configured_concurrency || 1}`;
+      document.getElementById('status-progress').textContent = `Прогресс файла: ${s.progress_percent || 0}% (${s.progress_received || 0} / ${s.progress_total || 0} байт)`;
+      document.getElementById('status-current').textContent = `Текущий message_id: ${s.current_message_id || ''}`;
+      document.getElementById('status-file').textContent = `Последний файл: ${s.last_file || ''}`;
+      document.getElementById('status-updated').textContent = `Обновлено: ${s.updated_at || ''}`;
+    }
+
+    function connectStatusStream() {
+      if (!window.EventSource) {
+        return;
+      }
+      const es = new EventSource('/status_stream');
+      es.onmessage = (event) => {
+        try {
+          const payload = JSON.parse(event.data || '{}');
+          applyStatusPayload(payload);
+        } catch (_) {
+        }
+      };
+      es.onerror = () => {
+        // browser auto-reconnects SSE connection
+      };
     }
 
     function applyTheme(theme) {
@@ -821,10 +833,9 @@
     document.getElementById('debug-toggle').addEventListener('change', refreshDebugLogs);
 
     setInterval(() => {
-      refreshStatus();
       refreshDebugLogs();
     }, 2000);
-    refreshStatus();
+    connectStatusStream();
     refreshDebugLogs();
   </script>
 </body>

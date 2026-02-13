@@ -43,7 +43,26 @@ async def download_if_needed(
     try:
         if status_hook:
             status_hook({"event": "downloading", "message_id": message.id})
-        file_path = await message.download_media(file=download_dir)
+        last_percent = {"value": -1}
+
+        def _progress_callback(received: int, total: int) -> None:
+            if not status_hook or total <= 0:
+                return
+            percent = int((received * 100) / total)
+            if percent == last_percent["value"]:
+                return
+            last_percent["value"] = percent
+            status_hook(
+                {
+                    "event": "progress",
+                    "message_id": message.id,
+                    "received": int(received),
+                    "total": int(total),
+                    "percent": percent,
+                }
+            )
+
+        file_path = await message.download_media(file=download_dir, progress_callback=_progress_callback)
         if file_path is None:
             logging.warning("Audio detected but no file downloaded for message_id=%s", message.id)
             if status_hook:
