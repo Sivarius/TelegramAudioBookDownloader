@@ -758,6 +758,8 @@ def _start_worker(
             total: Optional[int] = None,
             state: Optional[str] = None,
             file_path: Optional[str] = None,
+            speed_bps: Optional[float] = None,
+            eta_sec: Optional[float] = None,
         ) -> None:
             current = dict(worker_status.get("file_progresses", {}))
             item = dict(current.get(message_id, {}))
@@ -771,6 +773,10 @@ def _start_worker(
                 item["state"] = state
             if file_path:
                 item["file_path"] = file_path
+            if speed_bps is not None:
+                item["speed_bps"] = float(speed_bps)
+            if eta_sec is not None:
+                item["eta_sec"] = float(eta_sec)
             item["updated_at"] = datetime.now().strftime("%H:%M:%S")
             current[message_id] = item
             if len(current) > 40:
@@ -780,10 +786,17 @@ def _start_worker(
             _set_status(file_progresses=current)
 
         def _status_hook(payload: dict) -> None:
+            progress_runtime = getattr(_status_hook, "_progress_runtime", {})
+            setattr(_status_hook, "_progress_runtime", progress_runtime)
             event = payload.get("event", "")
             message_id = str(payload.get("message_id", ""))
             if event == "downloading":
                 _update_progress_item(message_id, percent=0, received=0, total=0, state="downloading")
+                progress_runtime[message_id] = {
+                    "last_received": 0,
+                    "last_ts": time.time(),
+                    "speed_bps": 0.0,
+                }
                 _set_status(
                     current_message_id=message_id,
                     message=f"Скачивание message_id={message_id}",
@@ -792,18 +805,39 @@ def _start_worker(
                     progress_total=0,
                 )
             elif event == "progress":
+                received = int(payload.get("received", 0))
+                total = int(payload.get("total", 0))
+                now = time.time()
+                state = progress_runtime.get(
+                    message_id, {"last_received": 0, "last_ts": now, "speed_bps": 0.0}
+                )
+                delta_bytes = received - int(state.get("last_received", 0))
+                delta_time = now - float(state.get("last_ts", now))
+                speed_bps = float(state.get("speed_bps", 0.0))
+                if delta_bytes > 0 and delta_time > 0.2:
+                    speed_bps = delta_bytes / delta_time
+                eta_sec = 0.0
+                if speed_bps > 1 and total > received:
+                    eta_sec = (total - received) / speed_bps
+                progress_runtime[message_id] = {
+                    "last_received": received,
+                    "last_ts": now,
+                    "speed_bps": speed_bps,
+                }
                 _update_progress_item(
                     message_id,
                     percent=int(payload.get("percent", 0)),
-                    received=int(payload.get("received", 0)),
-                    total=int(payload.get("total", 0)),
+                    received=received,
+                    total=total,
                     state="downloading",
+                    speed_bps=speed_bps,
+                    eta_sec=eta_sec,
                 )
                 _set_status(
                     current_message_id=message_id,
                     progress_percent=int(payload.get("percent", 0)),
-                    progress_received=int(payload.get("received", 0)),
-                    progress_total=int(payload.get("total", 0)),
+                    progress_received=received,
+                    progress_total=total,
                 )
             elif event == "downloaded":
                 _update_progress_item(
@@ -811,7 +845,9 @@ def _start_worker(
                     percent=100,
                     state="done",
                     file_path=str(payload.get("file_path", "")),
+                    eta_sec=0.0,
                 )
+                progress_runtime.pop(message_id, None)
                 _set_status(
                     downloaded=int(worker_status.get("downloaded", 0)) + 1,
                     current_message_id=message_id,
@@ -821,6 +857,7 @@ def _start_worker(
                 )
             elif event == "failed":
                 _update_progress_item(message_id, state="failed")
+                progress_runtime.pop(message_id, None)
                 _set_status(
                     failed=int(worker_status.get("failed", 0)) + 1,
                     current_message_id=message_id,
