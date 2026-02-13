@@ -1,18 +1,23 @@
 import asyncio
+from collections import deque
 import logging
+import os
 import threading
+import time
 import webbrowser
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
 from flask import Flask, jsonify, render_template, request
+from telethon import utils
 from telethon.errors import PhoneCodeExpiredError, PhoneCodeInvalidError, SessionPasswordNeededError
 
 from core.config import setup_logging
 from core.db import AppDatabase
 from core.downloader import run_downloader
 from core.models import Settings
+from core.sftp_client import SFTPSync
 from core.telegram_client import create_telegram_client, is_audio_message, resolve_channel_entity
 
 
@@ -23,6 +28,33 @@ PREVIEW_LIMIT = 300
 
 app = Flask(__name__)
 setup_logging()
+
+
+debug_log_lock = threading.Lock()
+debug_log_buffer: deque[str] = deque(maxlen=400)
+
+
+class InMemoryLogHandler(logging.Handler):
+    def emit(self, record: logging.LogRecord) -> None:
+        try:
+            msg = self.format(record)
+        except Exception:
+            msg = record.getMessage()
+        with debug_log_lock:
+            debug_log_buffer.append(msg)
+
+
+def _setup_debug_log_handler() -> None:
+    root = logging.getLogger()
+    if any(isinstance(h, InMemoryLogHandler) for h in root.handlers):
+        return
+    handler = InMemoryLogHandler()
+    handler.setLevel(logging.INFO)
+    handler.setFormatter(logging.Formatter("%(asctime)s | %(levelname)s | %(message)s"))
+    root.addHandler(handler)
+
+
+_setup_debug_log_handler()
 
 worker_lock = threading.Lock()
 worker_thread: Optional[threading.Thread] = None
@@ -40,6 +72,9 @@ worker_status = {
     "updated_at": "",
     "configured_concurrency": 1,
     "current_concurrency": 1,
+    "sftp_uploaded": 0,
+    "sftp_skipped": 0,
+    "sftp_failed": 0,
 }
 preview_cache: list[dict] = []
 auth_status = {
@@ -51,6 +86,12 @@ proxy_status = {
     "enabled": False,
     "available": False,
     "message": "MTProxy не используется.",
+    "updated_at": "",
+}
+sftp_status = {
+    "enabled": False,
+    "available": False,
+    "message": "SFTP не используется.",
     "updated_at": "",
 }
 
@@ -71,6 +112,13 @@ def _set_proxy_status(enabled: bool, available: bool, message: str) -> None:
     proxy_status["available"] = available
     proxy_status["message"] = message
     proxy_status["updated_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+
+def _set_sftp_status(enabled: bool, available: bool, message: str) -> None:
+    sftp_status["enabled"] = enabled
+    sftp_status["available"] = available
+    sftp_status["message"] = message
+    sftp_status["updated_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
 
 def _safe_int(value: str, default: int = 0) -> int:
@@ -98,6 +146,12 @@ def _load_saved_form() -> dict:
             "to_index": "",
             "use_mtproxy": (db.get_setting("USE_MTPROXY") or "0") == "1",
             "mtproxy_link": db.get_setting("MTPROXY_LINK") or "",
+            "use_sftp": (db.get_setting("USE_SFTP") or "0") == "1",
+            "sftp_host": db.get_setting("SFTP_HOST") or "",
+            "sftp_port": db.get_setting("SFTP_PORT") or "22",
+            "sftp_username": db.get_setting("SFTP_USERNAME") or "",
+            "sftp_password": db.get_setting("SFTP_PASSWORD") or "",
+            "sftp_remote_dir": db.get_setting("SFTP_REMOTE_DIR") or "/uploads",
             "remember_me": (db.get_setting("REMEMBER_ME") or "1") != "0",
         }
     finally:
@@ -121,13 +175,21 @@ def _form_from_request() -> dict:
         "to_index": request.form.get("to_index", "").strip(),
         "use_mtproxy": request.form.get("use_mtproxy") == "on",
         "mtproxy_link": request.form.get("mtproxy_link", saved["mtproxy_link"]).strip(),
+        "use_sftp": request.form.get("use_sftp") == "on",
+        "sftp_host": request.form.get("sftp_host", saved["sftp_host"]).strip(),
+        "sftp_port": request.form.get("sftp_port", saved["sftp_port"]).strip(),
+        "sftp_username": request.form.get("sftp_username", saved["sftp_username"]).strip(),
+        "sftp_password": request.form.get("sftp_password", saved["sftp_password"]).strip(),
+        "sftp_remote_dir": request.form.get("sftp_remote_dir", saved["sftp_remote_dir"]).strip(),
         "remember_me": request.form.get("remember_me") == "on",
     }
 
 
-def _build_settings(form: dict) -> Settings:
-    if not form["api_id"] or not form["api_hash"] or not form["phone"] or not form["channel_id"]:
-        raise ValueError("Заполните API_ID, API_HASH, PHONE и CHANNEL_ID.")
+def _build_settings(form: dict, require_channel: bool = True) -> Settings:
+    if not form["api_id"] or not form["api_hash"] or not form["phone"]:
+        raise ValueError("Заполните API_ID, API_HASH и PHONE.")
+    if require_channel and not form["channel_id"]:
+        raise ValueError("Заполните CHANNEL_ID.")
 
     api_id = _safe_int(form["api_id"], 0)
     if api_id <= 0:
@@ -144,17 +206,29 @@ def _build_settings(form: dict) -> Settings:
     if form["use_mtproxy"] and not form["mtproxy_link"]:
         raise ValueError("Включен MTProxy, но строка прокси пустая.")
 
+    sftp_port = _safe_int(form["sftp_port"], 22)
+    if sftp_port <= 0:
+        sftp_port = 22
+    if form["use_sftp"] and (not form["sftp_host"] or not form["sftp_username"]):
+        raise ValueError("Для SFTP заполните host и username.")
+
     return Settings(
         api_id=api_id,
         api_hash=form["api_hash"],
         phone=form["phone"],
-        channel=form["channel_id"],
+        channel=form["channel_id"] or "_",
         download_dir=Path(form["download_dir"] or "downloads").expanduser().resolve(),
         session_name=form["session_name"],
         startup_scan_limit=scan_limit,
         download_concurrency=download_concurrency,
         use_mtproxy=bool(form["use_mtproxy"]),
         mtproxy_link=form["mtproxy_link"],
+        use_sftp=bool(form["use_sftp"]),
+        sftp_host=form["sftp_host"],
+        sftp_port=sftp_port,
+        sftp_username=form["sftp_username"],
+        sftp_password=form["sftp_password"],
+        sftp_remote_dir=form["sftp_remote_dir"] or "/uploads",
     )
 
 
@@ -233,6 +307,82 @@ async def _validate_proxy(settings: Settings) -> tuple[bool, str]:
         return True, "MTProxy: подключение установлено."
     except Exception as exc:
         return False, f"MTProxy: ошибка подключения ({exc})."
+    finally:
+        await client.disconnect()
+
+
+async def _validate_sftp(settings: Settings) -> tuple[bool, str]:
+    if not settings.use_sftp:
+        return True, "SFTP выключен."
+    sftp_sync = SFTPSync(settings)
+    return await asyncio.to_thread(sftp_sync.validate_connection)
+
+
+async def _latest_audio_message_id(client, channel, scan_limit: int = 200) -> int:
+    async for message in client.iter_messages(channel, limit=scan_limit):
+        if is_audio_message(message):
+            return int(message.id)
+    return 0
+
+
+async def _collect_saved_channels_status(settings: Settings) -> tuple[bool, str, list[dict]]:
+    db = AppDatabase(DB_PATH)
+    try:
+        saved_channels = db.list_channel_states()
+    finally:
+        db.close()
+
+    if not saved_channels:
+        return True, "Сохраненные каналы отсутствуют.", []
+
+    client = create_telegram_client(settings)
+    await client.connect()
+    try:
+        if not await client.is_user_authorized():
+            items = []
+            for item in saved_channels:
+                items.append(
+                    {
+                        **item,
+                        "channel_ref": item["channel_ref"] or str(item["channel_id"]),
+                        "status": "Требуется авторизация",
+                        "has_new": False,
+                    }
+                )
+            return False, "Сессия не авторизована. Сначала нажмите Авторизоваться.", items
+
+        items: list[dict] = []
+        for saved in saved_channels:
+            channel_ref = (saved.get("channel_ref") or "").strip() or str(saved["channel_id"])
+            channel_title = saved.get("channel_title") or channel_ref
+            has_new = False
+            status = "Нет новых аудио"
+            latest_audio_id = 0
+            try:
+                entity = await resolve_channel_entity(client, channel_ref)
+                marked_channel_id = utils.get_peer_id(entity)
+                latest_audio_id = await _latest_audio_message_id(client, entity)
+                last_message_id = int(saved.get("last_message_id") or 0)
+                has_new = latest_audio_id > last_message_id if latest_audio_id > 0 else False
+                status = "Есть новые аудио" if has_new else "Нет новых аудио"
+                channel_title = getattr(entity, "title", channel_title)
+                channel_ref = str(marked_channel_id)
+            except Exception as exc:
+                status = f"Ошибка проверки: {exc}"
+            items.append(
+                {
+                    "channel_id": saved["channel_id"],
+                    "channel_ref": channel_ref,
+                    "channel_title": channel_title,
+                    "last_message_id": int(saved.get("last_message_id") or 0),
+                    "latest_audio_id": latest_audio_id,
+                    "has_new": has_new,
+                    "status": status,
+                    "updated_at": saved.get("updated_at") or "",
+                }
+            )
+
+        return True, f"Проверено каналов: {len(items)}", items
     finally:
         await client.disconnect()
 
@@ -365,6 +515,9 @@ def _start_worker(settings: Settings, allowed_message_ids: Optional[set[int]]) -
             downloaded=0,
             failed=0,
             skipped=0,
+            sftp_uploaded=0,
+            sftp_skipped=0,
+            sftp_failed=0,
             current_message_id="",
             last_file="",
             configured_concurrency=settings.download_concurrency,
@@ -400,6 +553,23 @@ def _start_worker(settings: Settings, allowed_message_ids: Optional[set[int]]) -
                         f"понижаю параллельность до {payload.get('concurrency', 1)}"
                     ),
                 )
+            elif event == "sftp_ready":
+                _set_status(message=str(payload.get("message", "SFTP готов.")))
+            elif event == "sftp_uploaded":
+                _set_status(
+                    sftp_uploaded=int(worker_status.get("sftp_uploaded", 0)) + 1,
+                    message=f"SFTP загружен: message_id={message_id}",
+                )
+            elif event == "sftp_skipped":
+                _set_status(
+                    sftp_skipped=int(worker_status.get("sftp_skipped", 0)) + 1,
+                    message=f"SFTP пропуск: message_id={message_id}",
+                )
+            elif event == "sftp_failed":
+                _set_status(
+                    sftp_failed=int(worker_status.get("sftp_failed", 0)) + 1,
+                    message=f"SFTP ошибка: message_id={message_id}",
+                )
 
         def _target() -> None:
             try:
@@ -431,6 +601,7 @@ def _render(form: dict, message: str = "", need_code: bool = False, need_passwor
         status=worker_status,
         auth_status=auth_status,
         proxy_status=proxy_status,
+        sftp_status=sftp_status,
         message=message,
         need_code=need_code,
         need_password=need_password,
@@ -455,8 +626,19 @@ def status():
             "proxy_available": proxy_status["available"],
             "proxy_message": proxy_status["message"],
             "proxy_updated_at": proxy_status["updated_at"],
+            "sftp_enabled": sftp_status["enabled"],
+            "sftp_available": sftp_status["available"],
+            "sftp_message": sftp_status["message"],
+            "sftp_updated_at": sftp_status["updated_at"],
         }
     )
+
+
+@app.get("/debug_logs")
+def debug_logs():
+    with debug_log_lock:
+        lines = list(debug_log_buffer)
+    return jsonify({"lines": lines, "count": len(lines)})
 
 
 @app.post("/authorize")
@@ -483,6 +665,14 @@ def authorize():
     else:
         _set_proxy_status(False, True, "MTProxy не используется.")
 
+    sftp_ok, sftp_message = asyncio.run(_validate_sftp(settings))
+    if settings.use_sftp:
+        _set_sftp_status(True, sftp_ok, sftp_message)
+        if not sftp_ok:
+            return _render(form, sftp_message)
+    else:
+        _set_sftp_status(False, True, "SFTP не используется.")
+
     _store_settings(settings)
 
     try:
@@ -503,7 +693,7 @@ def authorize():
     global preview_cache
     preview_cache = items if preview_ok else []
 
-    return _render(form, f"{proxy_status['message']} {auth_message} {preview_message}")
+    return _render(form, f"{proxy_status['message']} {sftp_status['message']} {auth_message} {preview_message}")
 
 
 @app.post("/preview")
@@ -523,11 +713,17 @@ def refresh_preview():
     else:
         _set_proxy_status(False, True, "MTProxy не используется.")
 
+    sftp_ok, sftp_message = asyncio.run(_validate_sftp(settings))
+    if settings.use_sftp:
+        _set_sftp_status(True, sftp_ok, sftp_message)
+    else:
+        _set_sftp_status(False, True, "SFTP не используется.")
+
     preview_ok, preview_message, items = asyncio.run(_fetch_preview(settings))
     global preview_cache
     preview_cache = items if preview_ok else []
 
-    return _render(form, f"{proxy_status['message']} {preview_message}")
+    return _render(form, f"{proxy_status['message']} {sftp_status['message']} {preview_message}")
 
 
 @app.post("/start")
@@ -552,6 +748,14 @@ def start_download():
     else:
         _set_proxy_status(False, True, "MTProxy не используется.")
 
+    sftp_ok, sftp_message = asyncio.run(_validate_sftp(settings))
+    if settings.use_sftp:
+        _set_sftp_status(True, sftp_ok, sftp_message)
+        if not sftp_ok:
+            return _render(form, sftp_message)
+    else:
+        _set_sftp_status(False, True, "SFTP не используется.")
+
     _store_settings(settings)
 
     channel_ok, channel_message = asyncio.run(_validate_channel(settings))
@@ -569,8 +773,39 @@ def start_download():
 
     started, start_message = _start_worker(settings, allowed_message_ids)
     if started:
-        return _render(form, f"{proxy_status['message']} {channel_message} {start_message}")
+        return _render(
+            form,
+            f"{proxy_status['message']} {sftp_status['message']} {channel_message} {start_message}",
+        )
     return _render(form, start_message)
+
+
+@app.post("/check_sftp")
+def check_sftp():
+    form = _form_from_request()
+    try:
+        settings = _build_settings(form, require_channel=False)
+    except ValueError as exc:
+        return _render(form, str(exc))
+
+    sftp_ok, sftp_message = asyncio.run(_validate_sftp(settings))
+    if settings.use_sftp:
+        _set_sftp_status(True, sftp_ok, sftp_message)
+    else:
+        _set_sftp_status(False, True, "SFTP не используется.")
+    return _render(form, sftp_status["message"])
+
+
+@app.post("/channels_status")
+def channels_status():
+    form = _form_from_request()
+    try:
+        settings = _build_settings(form, require_channel=False)
+    except ValueError as exc:
+        return jsonify({"ok": False, "message": str(exc), "items": []}), 400
+
+    ok, message, items = asyncio.run(_collect_saved_channels_status(settings))
+    return jsonify({"ok": ok, "message": message, "items": items})
 
 
 @app.post("/stop_server")
@@ -591,7 +826,14 @@ def stop_server():
         shutdown_func()
         return "Сервер остановлен."
 
-    return "Не удалось остановить сервер через Werkzeug hook.", 500
+    def _force_exit() -> None:
+        # Flask 3 / certain launch modes may not expose werkzeug.server.shutdown.
+        # Fallback: terminate process after response is sent.
+        time.sleep(0.5)
+        os._exit(0)
+
+    threading.Thread(target=_force_exit, daemon=True).start()
+    return "Сервер остановлен (fallback)."
 
 
 if __name__ == "__main__":

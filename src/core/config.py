@@ -119,6 +119,20 @@ def load_settings(db: AppDatabase) -> Settings:
     if use_mtproxy and not mtproxy_link:
         raise ValueError("USE_MTPROXY is enabled but MTPROXY_LINK is empty.")
 
+    use_sftp = _to_bool(_env_or_db("USE_SFTP", db) or "0")
+    sftp_host = _env_or_db("SFTP_HOST", db)
+    sftp_port_raw = _env_or_db("SFTP_PORT", db) or "22"
+    sftp_username = _env_or_db("SFTP_USERNAME", db)
+    sftp_password = _env_or_db("SFTP_PASSWORD", db)
+    sftp_remote_dir = _env_or_db("SFTP_REMOTE_DIR", db) or "/uploads"
+    try:
+        sftp_port = int(sftp_port_raw)
+    except ValueError as exc:
+        raise ValueError("SFTP_PORT must be an integer") from exc
+
+    if use_sftp and (not sftp_host or not sftp_username):
+        raise ValueError("USE_SFTP is enabled but SFTP_HOST/SFTP_USERNAME is empty.")
+
     return Settings(
         api_id=api_id,
         api_hash=api_hash,
@@ -130,4 +144,10 @@ def load_settings(db: AppDatabase) -> Settings:
         download_concurrency=download_concurrency,
         use_mtproxy=use_mtproxy,
         mtproxy_link=mtproxy_link,
+        use_sftp=use_sftp,
+        sftp_host=sftp_host,
+        sftp_port=sftp_port,
+        sftp_username=sftp_username,
+        sftp_password=sftp_password,
+        sftp_remote_dir=sftp_remote_dir,
     )

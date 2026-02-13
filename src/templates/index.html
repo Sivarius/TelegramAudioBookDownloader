@@ -153,6 +153,61 @@
       flex-wrap: wrap;
       margin-top: 12px;
     }
+    .menu-box {
+      margin-top: 12px;
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      padding: 10px;
+      background: var(--status-bg);
+    }
+    .menu-box.hidden {
+      display: none;
+    }
+    .debug-box {
+      margin-top: 12px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: var(--status-bg);
+      padding: 10px;
+      max-height: 240px;
+      overflow: auto;
+      display: none;
+    }
+    .debug-box.show {
+      display: block;
+    }
+    .debug-log {
+      margin: 0;
+      white-space: pre-wrap;
+      font-family: Consolas, monospace;
+      font-size: 12px;
+      color: var(--text);
+    }
+    .channel-item {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      border-bottom: 1px solid var(--line);
+      padding: 8px 0;
+    }
+    .channel-item:last-child {
+      border-bottom: 0;
+    }
+    .badge {
+      font-size: 12px;
+      padding: 2px 8px;
+      border-radius: 999px;
+      border: 1px solid var(--line);
+    }
+    .badge.ok {
+      color: var(--ok);
+      border-color: var(--ok);
+    }
+    .badge.warn {
+      color: var(--warn);
+      border-color: var(--warn);
+    }
     .check-row {
       display: flex;
       align-items: center;
@@ -243,7 +298,18 @@
     <div class="card">
       <h1>TeleGaParser</h1>
       <p class="sub">Авторизация Telegram, выбор канала и запуск скачивания аудио.</p>
-      <button id="theme-toggle" class="btn secondary" type="button">Тёмная тема</button>
+      <div class="btn-row">
+        <button id="theme-toggle" class="btn secondary" type="button">Тёмная тема</button>
+        <button id="channel-menu-toggle" class="btn secondary" type="button">История каналов</button>
+        <label class="check-row" style="margin:0 0 0 4px;">
+          <input id="debug-toggle" type="checkbox">
+          <span>Дебаг</span>
+        </label>
+      </div>
+      <div id="channel-menu-box" class="menu-box hidden">
+        <div id="channel-menu-status" class="sub">Загрузка списка каналов...</div>
+        <div id="channel-menu-list"></div>
+      </div>
 
       <form method="post" action="/authorize">
         <div class="grid">
@@ -253,7 +319,7 @@
               <span class="help" tabindex="0" data-tip="Числовой ID приложения Telegram API.">?</span>
               <a class="inline-link" href="https://my.telegram.org/apps" target="_blank" rel="noopener noreferrer">Получить</a>
             </div>
-            <input name="api_id" value="{{ form.api_id }}" required>
+            <input type="password" name="api_id" value="{{ form.api_id }}" required>
           </div>
           <div>
             <div class="label-row">
@@ -261,7 +327,7 @@
               <span class="help" tabindex="0" data-tip="Секретный hash приложения Telegram API.">?</span>
               <a class="inline-link" href="https://my.telegram.org/apps" target="_blank" rel="noopener noreferrer">Получить</a>
             </div>
-            <input name="api_hash" value="{{ form.api_hash }}" required>
+            <input type="password" name="api_hash" value="{{ form.api_hash }}" required>
           </div>
           <div>
             <div class="label-row">
@@ -275,7 +341,7 @@
               <label>CHANNEL_ID</label>
               <span class="help" tabindex="0" data-tip="Username канала (@mychannel) или числовой id (-100...).">?</span>
             </div>
-            <input name="channel_id" value="{{ form.channel_id }}" placeholder="@channel or -100..." required>
+            <input id="channel_id" name="channel_id" value="{{ form.channel_id }}" placeholder="@channel or -100..." required>
           </div>
           <div class="full">
             <div class="check-row">
@@ -296,7 +362,49 @@
               <label>Ссылка/строка MTProxy</label>
               <span class="help" tabindex="0" data-tip="Вставьте строку целиком, например: server=example.com&port=443&secret=...">?</span>
             </div>
-            <input name="mtproxy_link" value="{{ form.mtproxy_link }}" placeholder="server=example.com&port=443&secret=...">
+            <input type="password" name="mtproxy_link" value="{{ form.mtproxy_link }}" placeholder="server=example.com&port=443&secret=...">
+          </div>
+          <div class="full">
+            <div class="check-row">
+              <input id="use_sftp" type="checkbox" name="use_sftp" {% if form.use_sftp %}checked{% endif %}>
+              <label for="use_sftp">Загружать на SFTP</label>
+              <span class="help" tabindex="0" data-tip="Если включено, после скачивания главы будут загружаться в удалённый каталог по SFTP.">?</span>
+            </div>
+          </div>
+          <div id="sftp-group" class="full {% if not form.use_sftp %}hidden{% endif %}">
+            <div class="grid">
+              <div>
+                <div class="label-row">
+                  <label>SFTP_HOST</label>
+                </div>
+                <input type="password" name="sftp_host" value="{{ form.sftp_host }}" placeholder="sftp.example.com">
+              </div>
+              <div>
+                <div class="label-row">
+                  <label>SFTP_PORT</label>
+                </div>
+                <input type="password" name="sftp_port" value="{{ form.sftp_port }}" placeholder="22">
+              </div>
+              <div>
+                <div class="label-row">
+                  <label>SFTP_USERNAME</label>
+                </div>
+                <input type="password" name="sftp_username" value="{{ form.sftp_username }}" placeholder="username">
+              </div>
+              <div>
+                <div class="label-row">
+                  <label>SFTP_PASSWORD</label>
+                </div>
+                <input type="password" name="sftp_password" value="{{ form.sftp_password }}" placeholder="password">
+              </div>
+              <div class="full">
+                <div class="label-row">
+                  <label>SFTP_REMOTE_DIR</label>
+                  <span class="help" tabindex="0" data-tip="Базовый удалённый каталог. Внутри него автоматически создаётся подпапка с названием книги (канала).">?</span>
+                </div>
+                <input name="sftp_remote_dir" value="{{ form.sftp_remote_dir }}" placeholder="/uploads/books">
+              </div>
+            </div>
           </div>
           <div class="full">
             <div class="label-row">
@@ -358,6 +466,7 @@
 
         <div class="btn-row">
           <button class="btn" formaction="/authorize" type="submit">Авторизоваться</button>
+          <button class="btn secondary" formaction="/check_sftp" type="submit">Проверить SFTP</button>
           <button class="btn secondary" formaction="/preview" type="submit">Обновить предпросмотр</button>
           <button class="btn" formaction="/start" type="submit">Начать скачивание</button>
           <button class="btn secondary" formaction="/stop_server" type="submit">Стоп сервер</button>
@@ -394,8 +503,24 @@
           {% endif %}
           ({{ proxy_status.message }})
         </div>
+        <div id="status-sftp">
+          SFTP:
+          {% if sftp_status.enabled %}
+            {% if sftp_status.available %}
+              <span class="run">подключение установлено</span>
+            {% else %}
+              <span class="stop">ошибка подключения</span>
+            {% endif %}
+          {% else %}
+            <span class="stop">не используется</span>
+          {% endif %}
+          ({{ sftp_status.message }})
+        </div>
         <div id="status-counters">
           Скачано: {{ status.downloaded }} | Ошибок: {{ status.failed }} | Пропущено: {{ status.skipped }}
+        </div>
+        <div id="status-sftp-counters">
+          SFTP: загружено {{ status.sftp_uploaded }} | пропущено {{ status.sftp_skipped }} | ошибок {{ status.sftp_failed }}
         </div>
         <div id="status-concurrency">
           Параллельность: {{ status.current_concurrency }} / {{ status.configured_concurrency }}
@@ -416,6 +541,9 @@
       </div>
 
       <p class="note">Статус скачивания обновляется автоматически каждые 2 секунды.</p>
+      <div id="debug-box" class="debug-box">
+        <pre id="debug-log" class="debug-log">Debug disabled.</pre>
+      </div>
     </div>
 
     <div class="card">
@@ -477,7 +605,15 @@
           proxyClass = s.proxy_available ? 'run' : 'stop';
         }
         document.getElementById('status-proxy').innerHTML = `MTProxy: <span class="${proxyClass}">${proxyText}</span> (${s.proxy_message || ''})`;
+        let sftpText = 'не используется';
+        let sftpClass = 'stop';
+        if (s.sftp_enabled) {
+          sftpText = s.sftp_available ? 'подключение установлено' : 'ошибка подключения';
+          sftpClass = s.sftp_available ? 'run' : 'stop';
+        }
+        document.getElementById('status-sftp').innerHTML = `SFTP: <span class="${sftpClass}">${sftpText}</span> (${s.sftp_message || ''})`;
         document.getElementById('status-counters').textContent = `Скачано: ${s.downloaded || 0} | Ошибок: ${s.failed || 0} | Пропущено: ${s.skipped || 0}`;
+        document.getElementById('status-sftp-counters').textContent = `SFTP: загружено ${s.sftp_uploaded || 0} | пропущено ${s.sftp_skipped || 0} | ошибок ${s.sftp_failed || 0}`;
         document.getElementById('status-concurrency').textContent = `Параллельность: ${s.current_concurrency || 1} / ${s.configured_concurrency || 1}`;
         document.getElementById('status-current').textContent = `Текущий message_id: ${s.current_message_id || ''}`;
         document.getElementById('status-file').textContent = `Последний файл: ${s.last_file || ''}`;
@@ -514,8 +650,99 @@
     document.getElementById('use_mtproxy').addEventListener('change', toggleMtproxyField);
     toggleMtproxyField();
 
-    setInterval(refreshStatus, 2000);
+    function toggleSftpField() {
+      const useSftp = document.getElementById('use_sftp').checked;
+      const group = document.getElementById('sftp-group');
+      if (useSftp) {
+        group.classList.remove('hidden');
+      } else {
+        group.classList.add('hidden');
+      }
+    }
+
+    document.getElementById('use_sftp').addEventListener('change', toggleSftpField);
+    toggleSftpField();
+
+    async function loadChannelMenu() {
+      const form = document.querySelector('form');
+      const data = new FormData(form);
+      const status = document.getElementById('channel-menu-status');
+      const list = document.getElementById('channel-menu-list');
+      status.textContent = 'Проверка каналов...';
+      list.innerHTML = '';
+      try {
+        const response = await fetch('/channels_status', { method: 'POST', body: data });
+        const payload = await response.json();
+        status.textContent = payload.message || '';
+        if (!payload.items || payload.items.length === 0) {
+          list.innerHTML = '<div class="sub">Нет сохранённых каналов.</div>';
+          return;
+        }
+        payload.items.forEach((item) => {
+          const row = document.createElement('div');
+          row.className = 'channel-item';
+          const left = document.createElement('div');
+          left.innerHTML = `<div><strong>${item.channel_title || item.channel_ref}</strong></div><div class="mono">${item.channel_ref}</div><div class="sub">${item.status || ''}</div>`;
+          const rightWrap = document.createElement('div');
+          const badge = document.createElement('span');
+          badge.className = `badge ${item.has_new ? 'ok' : 'warn'}`;
+          badge.textContent = item.has_new ? 'Новые есть' : 'Новых нет';
+          const btn = document.createElement('button');
+          btn.type = 'button';
+          btn.className = 'btn secondary';
+          btn.textContent = 'Выбрать';
+          btn.addEventListener('click', () => {
+            document.getElementById('channel_id').value = item.channel_ref || '';
+          });
+          rightWrap.appendChild(badge);
+          rightWrap.appendChild(document.createElement('br'));
+          rightWrap.appendChild(btn);
+          row.appendChild(left);
+          row.appendChild(rightWrap);
+          list.appendChild(row);
+        });
+      } catch (e) {
+        status.textContent = `Ошибка загрузки списка: ${e}`;
+      }
+    }
+
+    document.getElementById('channel-menu-toggle').addEventListener('click', async () => {
+      const box = document.getElementById('channel-menu-box');
+      box.classList.toggle('hidden');
+      if (!box.classList.contains('hidden')) {
+        await loadChannelMenu();
+      }
+    });
+
+    async function refreshDebugLogs() {
+      const toggle = document.getElementById('debug-toggle');
+      const box = document.getElementById('debug-box');
+      const pre = document.getElementById('debug-log');
+      if (!toggle.checked) {
+        box.classList.remove('show');
+        return;
+      }
+      box.classList.add('show');
+      try {
+        const response = await fetch('/debug_logs', { cache: 'no-store' });
+        if (!response.ok) {
+          return;
+        }
+        const data = await response.json();
+        pre.textContent = (data.lines || []).join('\n') || 'No logs yet.';
+        box.scrollTop = box.scrollHeight;
+      } catch (_) {
+      }
+    }
+
+    document.getElementById('debug-toggle').addEventListener('change', refreshDebugLogs);
+
+    setInterval(() => {
+      refreshStatus();
+      refreshDebugLogs();
+    }, 2000);
     refreshStatus();
+    refreshDebugLogs();
   </script>
 </body>
 </html>

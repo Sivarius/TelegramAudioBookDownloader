@@ -37,8 +37,5 @@ if not exist ".env" (
 if errorlevel 1 (
   echo.
   echo Web UI exited with error.
-  pause
   exit /b 1
 )
-
-pause

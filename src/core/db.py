@@ -73,6 +73,12 @@ class AppDatabase:
         self.set_setting("DOWNLOAD_CONCURRENCY", str(settings.download_concurrency))
         self.set_setting("USE_MTPROXY", "1" if settings.use_mtproxy else "0")
         self.set_setting("MTPROXY_LINK", settings.mtproxy_link)
+        self.set_setting("USE_SFTP", "1" if settings.use_sftp else "0")
+        self.set_setting("SFTP_HOST", settings.sftp_host)
+        self.set_setting("SFTP_PORT", str(settings.sftp_port))
+        self.set_setting("SFTP_USERNAME", settings.sftp_username)
+        self.set_setting("SFTP_PASSWORD", settings.sftp_password)
+        self.set_setting("SFTP_REMOTE_DIR", settings.sftp_remote_dir)
 
     def already_downloaded(self, channel_id: int, message_id: int) -> bool:
         cur = self._conn.execute(
@@ -149,3 +155,25 @@ class AppDatabase:
 
     def close(self) -> None:
         self._conn.close()
+
+    def list_channel_states(self) -> list[dict]:
+        cur = self._conn.execute(
+            """
+            SELECT channel_id, channel_ref, channel_title, last_message_id, updated_at
+            FROM channel_state
+            ORDER BY updated_at DESC
+            """
+        )
+        rows = cur.fetchall()
+        result: list[dict] = []
+        for row in rows:
+            result.append(
+                {
+                    "channel_id": int(row[0]),
+                    "channel_ref": row[1] or "",
+                    "channel_title": row[2] or "",
+                    "last_message_id": int(row[3] or 0),
+                    "updated_at": row[4] or "",
+                }
+            )
+        return result

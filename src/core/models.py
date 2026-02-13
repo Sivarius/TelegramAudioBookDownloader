@@ -14,3 +14,9 @@ class Settings:
     download_concurrency: int
     use_mtproxy: bool
     mtproxy_link: str
+    use_sftp: bool
+    sftp_host: str
+    sftp_port: int
+    sftp_username: str
+    sftp_password: str
+    sftp_remote_dir: str
