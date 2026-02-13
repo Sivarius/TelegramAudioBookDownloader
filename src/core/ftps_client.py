@@ -1,12 +1,15 @@
 import hashlib
 import os
 import posixpath
+import socket
 import ssl
 import threading
 from ftplib import FTP_TLS, error_perm
 from typing import Optional
 
 from core.models import Settings
+
+FTPS_TIMEOUT_SECONDS = 30
 
 
 class FTPSSync:
@@ -42,8 +45,10 @@ class FTPSSync:
             context = ssl.create_default_context()
         else:
             context = ssl._create_unverified_context()
-        ftps = FTP_TLS(context=context, timeout=12)
+        ftps = FTP_TLS(context=context, timeout=FTPS_TIMEOUT_SECONDS)
         ftps.connect(host=self.settings.ftps_host, port=self.settings.ftps_port)
+        if ftps.sock is not None:
+            ftps.sock.settimeout(FTPS_TIMEOUT_SECONDS)
         ftps.login(user=self.settings.ftps_username, passwd=self.settings.ftps_password or "")
         ftps.prot_p()
         ftps.set_pasv(True)
@@ -76,6 +81,13 @@ class FTPSSync:
                 "FTPS: ошибка TLS-сертификата. "
                 "Проверьте цепочку сертификатов на сервере или отключите проверку TLS в настройках FTPS. "
                 f"({exc})",
+            )
+        except (TimeoutError, socket.timeout) as exc:
+            return (
+                False,
+                "FTPS: таймаут чтения/ответа сервера. "
+                "Проверьте доступность хоста/порта, настройки firewall/NAT и режим FTPS на сервере. "
+                f"(timeout={FTPS_TIMEOUT_SECONDS}s; {exc})",
             )
         except Exception as exc:
             return False, f"FTPS: ошибка подключения ({exc})"
