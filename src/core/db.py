@@ -56,6 +56,7 @@ class AppDatabase:
                 check_new INTEGER NOT NULL DEFAULT 0,
                 auto_download INTEGER NOT NULL DEFAULT 0,
                 auto_sftp INTEGER NOT NULL DEFAULT 0,
+                auto_ftps INTEGER NOT NULL DEFAULT 0,
                 cleanup_local INTEGER NOT NULL DEFAULT 0,
                 last_checked_at TEXT,
                 has_new_audio INTEGER NOT NULL DEFAULT 0,
@@ -65,7 +66,16 @@ class AppDatabase:
             )
             """
         )
+        self._ensure_channel_preferences_columns()
         self._conn.commit()
+
+    def _ensure_channel_preferences_columns(self) -> None:
+        cur = self._conn.execute("PRAGMA table_info(channel_preferences)")
+        columns = {str(row[1]) for row in cur.fetchall()}
+        if "auto_ftps" not in columns:
+            self._conn.execute(
+                "ALTER TABLE channel_preferences ADD COLUMN auto_ftps INTEGER NOT NULL DEFAULT 0"
+            )
 
     def get_setting(self, key: str) -> Optional[str]:
         cur = self._conn.execute("SELECT value FROM app_settings WHERE key = ?", (key,))
@@ -105,6 +115,16 @@ class AppDatabase:
         self.set_setting(
             "CLEANUP_LOCAL_AFTER_SFTP",
             "1" if settings.cleanup_local_after_sftp else "0",
+        )
+        self.set_setting("USE_FTPS", "1" if settings.use_ftps else "0")
+        self.set_setting("FTPS_HOST", settings.ftps_host)
+        self.set_setting("FTPS_PORT", str(settings.ftps_port))
+        self.set_setting("FTPS_USERNAME", settings.ftps_username)
+        self.set_setting("FTPS_PASSWORD", settings.ftps_password)
+        self.set_setting("FTPS_REMOTE_DIR", settings.ftps_remote_dir)
+        self.set_setting(
+            "CLEANUP_LOCAL_AFTER_FTPS",
+            "1" if settings.cleanup_local_after_ftps else "0",
         )
 
     def already_downloaded(self, channel_id: int, message_id: int) -> bool:
@@ -256,7 +276,7 @@ class AppDatabase:
             """
             SELECT
                 channel_ref, channel_id, channel_title,
-                check_new, auto_download, auto_sftp, cleanup_local,
+                check_new, auto_download, auto_sftp, auto_ftps, cleanup_local,
                 last_checked_at, has_new_audio, latest_audio_id, last_error, updated_at
             FROM channel_preferences
             ORDER BY updated_at DESC
@@ -273,12 +293,13 @@ class AppDatabase:
                     "check_new": bool(int(row[3] or 0)),
                     "auto_download": bool(int(row[4] or 0)),
                     "auto_sftp": bool(int(row[5] or 0)),
-                    "cleanup_local": bool(int(row[6] or 0)),
-                    "last_checked_at": row[7] or "",
-                    "has_new_audio": bool(int(row[8] or 0)),
-                    "latest_audio_id": int(row[9] or 0),
-                    "last_error": row[10] or "",
-                    "updated_at": row[11] or "",
+                    "auto_ftps": bool(int(row[6] or 0)),
+                    "cleanup_local": bool(int(row[7] or 0)),
+                    "last_checked_at": row[8] or "",
+                    "has_new_audio": bool(int(row[9] or 0)),
+                    "latest_audio_id": int(row[10] or 0),
+                    "last_error": row[11] or "",
+                    "updated_at": row[12] or "",
                 }
             )
         return items
@@ -291,6 +312,7 @@ class AppDatabase:
         check_new: bool,
         auto_download: bool,
         auto_sftp: bool,
+        auto_ftps: bool,
         cleanup_local: bool,
     ) -> None:
         ref = (channel_ref or "").strip()
@@ -300,9 +322,9 @@ class AppDatabase:
             """
             INSERT INTO channel_preferences(
                 channel_ref, channel_id, channel_title,
-                check_new, auto_download, auto_sftp, cleanup_local, updated_at
+                check_new, auto_download, auto_sftp, auto_ftps, cleanup_local, updated_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
             ON CONFLICT(channel_ref) DO UPDATE SET
                 channel_id = excluded.channel_id,
                 channel_title = CASE
@@ -312,6 +334,7 @@ class AppDatabase:
                 check_new = excluded.check_new,
                 auto_download = excluded.auto_download,
                 auto_sftp = excluded.auto_sftp,
+                auto_ftps = excluded.auto_ftps,
                 cleanup_local = excluded.cleanup_local,
                 updated_at = CURRENT_TIMESTAMP
             """,
@@ -322,6 +345,7 @@ class AppDatabase:
                 1 if check_new else 0,
                 1 if auto_download else 0,
                 1 if auto_sftp else 0,
+                1 if auto_ftps else 0,
                 1 if cleanup_local else 0,
             ),
         )

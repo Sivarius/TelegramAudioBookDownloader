@@ -21,3 +21,10 @@ class Settings:
     sftp_password: str
     sftp_remote_dir: str
     cleanup_local_after_sftp: bool
+    use_ftps: bool
+    ftps_host: str
+    ftps_port: int
+    ftps_username: str
+    ftps_password: str
+    ftps_remote_dir: str
+    cleanup_local_after_ftps: bool

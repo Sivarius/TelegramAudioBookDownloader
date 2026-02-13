@@ -9,6 +9,7 @@ from telethon.tl.custom.message import Message
 
 from core.config import sanitize_folder_name
 from core.db import AppDatabase
+from core.ftps_client import FTPSSync
 from core.models import Settings
 from core.sftp_client import SFTPSync
 from core.telegram_client import create_telegram_client, is_audio_message, resolve_channel_entity
@@ -54,8 +55,8 @@ async def download_if_needed(
     status_hook: Optional[Callable[[dict], None]] = None,
     channel_ref: str = "",
     channel_title: str = "",
-    sftp_sync: Optional[SFTPSync] = None,
-    cleanup_local_after_sftp: bool = False,
+    remote_sync: Optional[object] = None,
+    cleanup_local_after_remote: bool = False,
 ) -> None:
     channel_id = message.chat_id
     if channel_id is None:
@@ -139,11 +140,12 @@ async def download_if_needed(
             last_file_path=str(file_path),
         )
         logging.info("Downloaded message_id=%s to %s", message.id, file_path)
-        if sftp_sync and sftp_sync.enabled:
+        if remote_sync and getattr(remote_sync, "enabled", False):
             try:
                 uploaded, sftp_info = await asyncio.to_thread(
-                    sftp_sync.upload_file_if_needed, str(file_path)
+                    remote_sync.upload_file_if_needed, str(file_path)
                 )
+                transport = str(getattr(remote_sync, "name", "REMOTE"))
                 if status_hook:
                     status_hook(
                         {
@@ -151,9 +153,10 @@ async def download_if_needed(
                             "message_id": message.id,
                             "file_path": str(file_path),
                             "sftp_info": sftp_info,
+                            "transport": transport,
                         }
                     )
-                if cleanup_local_after_sftp and "verified=True" in sftp_info:
+                if cleanup_local_after_remote and "verified=True" in sftp_info:
                     local_path = Path(str(file_path))
                     if local_path.exists():
                         local_path.unlink()
@@ -163,10 +166,11 @@ async def download_if_needed(
                                     "event": "local_cleaned",
                                     "message_id": message.id,
                                     "file_path": str(file_path),
+                                    "transport": transport,
                                 }
                             )
             except Exception as sftp_exc:
-                logging.exception("SFTP upload failed for message_id=%s", message.id)
+                logging.exception("Remote upload failed for message_id=%s", message.id)
                 if status_hook:
                     status_hook(
                         {
@@ -174,6 +178,7 @@ async def download_if_needed(
                             "message_id": message.id,
                             "file_path": str(file_path),
                             "reason": str(sftp_exc),
+                            "transport": str(getattr(remote_sync, "name", "REMOTE")),
                         }
                     )
         if status_hook:
@@ -217,8 +222,8 @@ async def initial_backfill(
     channel_title: str = "",
     stop_requested: Optional[Callable[[], bool]] = None,
     concurrency: int = 1,
-    sftp_sync: Optional[SFTPSync] = None,
-    cleanup_local_after_sftp: bool = False,
+    remote_sync: Optional[object] = None,
+    cleanup_local_after_remote: bool = False,
 ) -> None:
     if limit == 0:
         return
@@ -246,8 +251,8 @@ async def initial_backfill(
                         status_hook=status_hook,
                         channel_ref=channel_ref,
                         channel_title=channel_title,
-                        sftp_sync=sftp_sync,
-                        cleanup_local_after_sftp=cleanup_local_after_sftp,
+                        remote_sync=remote_sync,
+                        cleanup_local_after_remote=cleanup_local_after_remote,
                     )
                     return
                 except FloodWaitError as flood:
@@ -310,7 +315,11 @@ async def run_downloader(
     live_mode: bool = True,
 ) -> None:
     db = AppDatabase(db_path)
-    sftp_sync = SFTPSync(settings)
+    remote_sync: Optional[object] = None
+    if settings.use_sftp:
+        remote_sync = SFTPSync(settings)
+    elif settings.use_ftps:
+        remote_sync = FTPSSync(settings)
     client = None
     try:
         settings.download_dir.mkdir(parents=True, exist_ok=True)
@@ -332,19 +341,21 @@ async def run_downloader(
         channel_folder = sanitize_folder_name(channel_title)
         effective_download_dir = settings.download_dir / channel_folder
         effective_download_dir.mkdir(parents=True, exist_ok=True)
-        if sftp_sync.enabled:
+        if remote_sync and getattr(remote_sync, "enabled", False):
             try:
-                await asyncio.to_thread(sftp_sync.connect)
-                await asyncio.to_thread(sftp_sync.prepare_channel_dir, channel_folder)
+                await asyncio.to_thread(remote_sync.connect)
+                await asyncio.to_thread(remote_sync.prepare_channel_dir, channel_folder)
+                transport = str(getattr(remote_sync, "name", "REMOTE"))
                 if status_hook:
                     status_hook(
                         {
                             "event": "sftp_ready",
-                            "message": f"SFTP готов: {sftp_sync.remote_channel_dir}",
+                            "message": f"{transport} готов: {getattr(remote_sync, 'remote_channel_dir', '')}",
+                            "transport": transport,
                         }
                     )
             except Exception as sftp_exc:
-                raise RuntimeError(f"SFTP setup failed: {sftp_exc}") from sftp_exc
+                raise RuntimeError(f"Remote upload setup failed: {sftp_exc}") from sftp_exc
 
         last_downloaded_id = 0
         if allowed_message_ids is None:
@@ -369,8 +380,10 @@ async def run_downloader(
             channel_title=channel_title,
             stop_requested=stop_requested,
             concurrency=settings.download_concurrency,
-            sftp_sync=sftp_sync,
-            cleanup_local_after_sftp=settings.cleanup_local_after_sftp,
+            remote_sync=remote_sync,
+            cleanup_local_after_remote=(
+                settings.cleanup_local_after_sftp if settings.use_sftp else settings.cleanup_local_after_ftps
+            ),
         )
 
         if not live_mode:
@@ -393,8 +406,12 @@ async def run_downloader(
                             status_hook=status_hook,
                             channel_ref=settings.channel,
                             channel_title=channel_title,
-                            sftp_sync=sftp_sync,
-                            cleanup_local_after_sftp=settings.cleanup_local_after_sftp,
+                            remote_sync=remote_sync,
+                            cleanup_local_after_remote=(
+                                settings.cleanup_local_after_sftp
+                                if settings.use_sftp
+                                else settings.cleanup_local_after_ftps
+                            ),
                         )
                         return
                     except FloodWaitError as flood:
@@ -448,9 +465,9 @@ async def run_downloader(
                 await client.disconnect()
             except Exception:
                 logging.exception("Failed to disconnect Telegram client")
-        if sftp_sync.enabled:
+        if remote_sync and getattr(remote_sync, "enabled", False):
             try:
-                await asyncio.to_thread(sftp_sync.close)
+                await asyncio.to_thread(remote_sync.close)
             except Exception:
-                logging.exception("Failed to close SFTP client")
+                logging.exception("Failed to close remote upload client")
         db.close()

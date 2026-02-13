@@ -4,6 +4,7 @@ from core.downloader import run_downloader
 from core.models import Settings
 from core.telegram_client import create_telegram_client, is_audio_message, resolve_channel_entity
 from core.sftp_client import SFTPSync
+from core.ftps_client import FTPSSync
 
 __all__ = [
     "AppDatabase",
@@ -14,5 +15,6 @@ __all__ = [
     "resolve_channel_entity",
     "run_downloader",
     "SFTPSync",
+    "FTPSSync",
     "setup_logging",
 ]

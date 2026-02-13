@@ -19,6 +19,7 @@ from telethon.errors import PhoneCodeExpiredError, PhoneCodeInvalidError, Sessio
 from core.config import setup_logging
 from core.db import AppDatabase
 from core.downloader import run_downloader
+from core.ftps_client import FTPSSync
 from core.models import Settings
 from core.sftp_client import SFTPSync
 from core.telegram_client import create_telegram_client, is_audio_message, resolve_channel_entity
@@ -110,6 +111,12 @@ sftp_status = {
     "message": "SFTP не используется.",
     "updated_at": "",
 }
+ftps_status = {
+    "enabled": False,
+    "available": False,
+    "message": "FTPS не используется.",
+    "updated_at": "",
+}
 
 
 def _set_status(**kwargs) -> None:
@@ -153,6 +160,17 @@ def _set_sftp_status(enabled: bool, available: bool, message: str) -> None:
         status_cond.notify_all()
 
 
+def _set_ftps_status(enabled: bool, available: bool, message: str) -> None:
+    global status_version
+    ftps_status["enabled"] = enabled
+    ftps_status["available"] = available
+    ftps_status["message"] = message
+    ftps_status["updated_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    with status_cond:
+        status_version += 1
+        status_cond.notify_all()
+
+
 def _status_payload() -> dict:
     return {
         **worker_status,
@@ -167,6 +185,10 @@ def _status_payload() -> dict:
         "sftp_available": sftp_status["available"],
         "sftp_message": sftp_status["message"],
         "sftp_updated_at": sftp_status["updated_at"],
+        "ftps_enabled": ftps_status["enabled"],
+        "ftps_available": ftps_status["available"],
+        "ftps_message": ftps_status["message"],
+        "ftps_updated_at": ftps_status["updated_at"],
     }
 
 
@@ -202,6 +224,13 @@ def _load_saved_form() -> dict:
             "sftp_password": db.get_setting("SFTP_PASSWORD") or "",
             "sftp_remote_dir": db.get_setting("SFTP_REMOTE_DIR") or "/uploads",
             "cleanup_local_after_sftp": (db.get_setting("CLEANUP_LOCAL_AFTER_SFTP") or "0") == "1",
+            "use_ftps": (db.get_setting("USE_FTPS") or "0") == "1",
+            "ftps_host": db.get_setting("FTPS_HOST") or "",
+            "ftps_port": db.get_setting("FTPS_PORT") or "21",
+            "ftps_username": db.get_setting("FTPS_USERNAME") or "",
+            "ftps_password": db.get_setting("FTPS_PASSWORD") or "",
+            "ftps_remote_dir": db.get_setting("FTPS_REMOTE_DIR") or "/uploads",
+            "cleanup_local_after_ftps": (db.get_setting("CLEANUP_LOCAL_AFTER_FTPS") or "0") == "1",
             "download_new": False,
             "remember_me": (db.get_setting("REMEMBER_ME") or "1") != "0",
             "enable_periodic_checks": (db.get_setting("ENABLE_PERIODIC_CHECKS") or "0") == "1",
@@ -234,6 +263,13 @@ def _form_from_request() -> dict:
         "sftp_password": request.form.get("sftp_password", saved["sftp_password"]).strip(),
         "sftp_remote_dir": request.form.get("sftp_remote_dir", saved["sftp_remote_dir"]).strip(),
         "cleanup_local_after_sftp": request.form.get("cleanup_local_after_sftp") == "on",
+        "use_ftps": request.form.get("use_ftps") == "on",
+        "ftps_host": request.form.get("ftps_host", saved["ftps_host"]).strip(),
+        "ftps_port": request.form.get("ftps_port", saved["ftps_port"]).strip(),
+        "ftps_username": request.form.get("ftps_username", saved["ftps_username"]).strip(),
+        "ftps_password": request.form.get("ftps_password", saved["ftps_password"]).strip(),
+        "ftps_remote_dir": request.form.get("ftps_remote_dir", saved["ftps_remote_dir"]).strip(),
+        "cleanup_local_after_ftps": request.form.get("cleanup_local_after_ftps") == "on",
         "download_new": request.form.get("download_new") == "on",
         "remember_me": request.form.get("remember_me") == "on",
         "enable_periodic_checks": request.form.get("enable_periodic_checks") == "on",
@@ -267,6 +303,14 @@ def _build_settings(form: dict, require_channel: bool = True) -> Settings:
     if form["use_sftp"] and (not form["sftp_host"] or not form["sftp_username"]):
         raise ValueError("Для SFTP заполните host и username.")
 
+    ftps_port = _safe_int(form["ftps_port"], 21)
+    if ftps_port <= 0:
+        ftps_port = 21
+    if form["use_ftps"] and (not form["ftps_host"] or not form["ftps_username"]):
+        raise ValueError("Для FTPS заполните host и username.")
+    if form["use_sftp"] and form["use_ftps"]:
+        raise ValueError("Одновременно можно включить только один протокол: SFTP или FTPS.")
+
     return Settings(
         api_id=api_id,
         api_hash=form["api_hash"],
@@ -285,6 +329,13 @@ def _build_settings(form: dict, require_channel: bool = True) -> Settings:
         sftp_password=form["sftp_password"],
         sftp_remote_dir=form["sftp_remote_dir"] or "/uploads",
         cleanup_local_after_sftp=bool(form["cleanup_local_after_sftp"]),
+        use_ftps=bool(form["use_ftps"]),
+        ftps_host=form["ftps_host"],
+        ftps_port=ftps_port,
+        ftps_username=form["ftps_username"],
+        ftps_password=form["ftps_password"],
+        ftps_remote_dir=form["ftps_remote_dir"] or "/uploads",
+        cleanup_local_after_ftps=bool(form["cleanup_local_after_ftps"]),
     )
 
 
@@ -390,6 +441,13 @@ async def _validate_sftp(settings: Settings) -> tuple[bool, str]:
     return await asyncio.to_thread(sftp_sync.validate_connection)
 
 
+async def _validate_ftps(settings: Settings) -> tuple[bool, str]:
+    if not settings.use_ftps:
+        return True, "FTPS выключен."
+    ftps_sync = FTPSSync(settings)
+    return await asyncio.to_thread(ftps_sync.validate_connection)
+
+
 async def _latest_audio_message_id(client, channel, scan_limit: int = 200) -> int:
     async for message in client.iter_messages(channel, limit=scan_limit):
         if is_audio_message(message):
@@ -410,7 +468,8 @@ def _upsert_current_channel_preference(settings: Settings) -> None:
             check_new=False,
             auto_download=False,
             auto_sftp=False,
-            cleanup_local=bool(settings.cleanup_local_after_sftp),
+            auto_ftps=False,
+            cleanup_local=bool(settings.cleanup_local_after_sftp or settings.cleanup_local_after_ftps),
         )
     finally:
         db.close()
@@ -447,6 +506,7 @@ def _saved_channels_fallback(saved_channels: list[dict], message: str) -> tuple[
                 "check_new": bool(saved.get("check_new")),
                 "auto_download": bool(saved.get("auto_download")),
                 "auto_sftp": bool(saved.get("auto_sftp")),
+                "auto_ftps": bool(saved.get("auto_ftps")),
                 "cleanup_local": bool(saved.get("cleanup_local")),
                 "last_checked_at": saved.get("last_checked_at") or "",
                 "latest_audio_id": int(saved.get("latest_audio_id") or 0),
@@ -549,6 +609,7 @@ async def _collect_saved_channels_status(
                         check_new=bool(saved.get("check_new")),
                         auto_download=bool(saved.get("auto_download")),
                         auto_sftp=bool(saved.get("auto_sftp")),
+                        auto_ftps=bool(saved.get("auto_ftps")),
                         cleanup_local=bool(saved.get("cleanup_local")),
                     )
                     db_inner.update_channel_check_status(
@@ -581,6 +642,7 @@ async def _collect_saved_channels_status(
                     "check_new": bool(saved.get("check_new")),
                     "auto_download": bool(saved.get("auto_download")),
                     "auto_sftp": bool(saved.get("auto_sftp")),
+                    "auto_ftps": bool(saved.get("auto_ftps")),
                     "cleanup_local": bool(saved.get("cleanup_local")),
                     "last_checked_at": saved.get("last_checked_at") or "",
                     "latest_audio_id": latest_audio_id,
@@ -649,7 +711,9 @@ def _run_periodic_checks_once() -> None:
                 settings,
                 channel=channel_ref,
                 use_sftp=bool(settings.use_sftp and item.get("auto_sftp")),
+                use_ftps=bool(settings.use_ftps and item.get("auto_ftps")),
                 cleanup_local_after_sftp=bool(item.get("cleanup_local")),
+                cleanup_local_after_ftps=bool(item.get("cleanup_local")),
             )
             started, msg = _start_worker(run_settings, None, live_mode=False, source="auto")
             logging.info("Auto-download for %s: %s", channel_ref, msg)
@@ -945,27 +1009,31 @@ def _start_worker(
                     ),
                 )
             elif event == "sftp_ready":
-                _set_status(message=str(payload.get("message", "SFTP готов.")))
+                _set_status(message=str(payload.get("message", "Удаленный протокол готов.")))
             elif event == "sftp_uploaded":
                 _update_progress_item(message_id, state="sftp_uploaded")
+                transport = str(payload.get("transport", "SFTP"))
                 _set_status(
                     sftp_uploaded=int(worker_status.get("sftp_uploaded", 0)) + 1,
-                    message=f"SFTP загружен: message_id={message_id}",
+                    message=f"{transport} загружен: message_id={message_id}",
                 )
             elif event == "sftp_skipped":
                 _update_progress_item(message_id, state="sftp_skipped")
+                transport = str(payload.get("transport", "SFTP"))
                 _set_status(
                     sftp_skipped=int(worker_status.get("sftp_skipped", 0)) + 1,
-                    message=f"SFTP пропуск: message_id={message_id}",
+                    message=f"{transport} пропуск: message_id={message_id}",
                 )
             elif event == "sftp_failed":
                 _update_progress_item(message_id, state="sftp_failed")
+                transport = str(payload.get("transport", "SFTP"))
                 _set_status(
                     sftp_failed=int(worker_status.get("sftp_failed", 0)) + 1,
-                    message=f"SFTP ошибка: message_id={message_id}",
+                    message=f"{transport} ошибка: message_id={message_id}",
                 )
             elif event == "local_cleaned":
-                _set_status(message=f"Локальный файл удален после SFTP: message_id={message_id}")
+                transport = str(payload.get("transport", "SFTP"))
+                _set_status(message=f"Локальный файл удален после {transport}: message_id={message_id}")
 
         def _target() -> None:
             loop: Optional[asyncio.AbstractEventLoop] = None
@@ -1022,6 +1090,7 @@ def _render(form: dict, message: str = "", need_code: bool = False, need_passwor
         auth_status=auth_status,
         proxy_status=proxy_status,
         sftp_status=sftp_status,
+        ftps_status=ftps_status,
         message=message,
         need_code=need_code,
         need_password=need_password,
@@ -1098,6 +1167,14 @@ def authorize():
     else:
         _set_sftp_status(False, True, "SFTP не используется.")
 
+    ftps_ok, ftps_message = asyncio.run(_validate_ftps(settings))
+    if settings.use_ftps:
+        _set_ftps_status(True, ftps_ok, ftps_message)
+        if not ftps_ok:
+            return _render(form, ftps_message)
+    else:
+        _set_ftps_status(False, True, "FTPS не используется.")
+
     _store_settings(settings)
     _upsert_current_channel_preference(settings)
 
@@ -1119,7 +1196,10 @@ def authorize():
     global preview_cache
     preview_cache = items if preview_ok else []
 
-    return _render(form, f"{proxy_status['message']} {sftp_status['message']} {auth_message} {preview_message}")
+    return _render(
+        form,
+        f"{proxy_status['message']} {sftp_status['message']} {ftps_status['message']} {auth_message} {preview_message}",
+    )
 
 
 @app.post("/preview")
@@ -1146,12 +1226,18 @@ def refresh_preview():
     else:
         _set_sftp_status(False, True, "SFTP не используется.")
 
+    ftps_ok, ftps_message = asyncio.run(_validate_ftps(settings))
+    if settings.use_ftps:
+        _set_ftps_status(True, ftps_ok, ftps_message)
+    else:
+        _set_ftps_status(False, True, "FTPS не используется.")
+
     _upsert_current_channel_preference(settings)
     preview_ok, preview_message, items = asyncio.run(_fetch_preview(settings))
     global preview_cache
     preview_cache = items if preview_ok else []
 
-    return _render(form, f"{proxy_status['message']} {sftp_status['message']} {preview_message}")
+    return _render(form, f"{proxy_status['message']} {sftp_status['message']} {ftps_status['message']} {preview_message}")
 
 
 @app.post("/start")
@@ -1185,6 +1271,14 @@ def start_download():
     else:
         _set_sftp_status(False, True, "SFTP не используется.")
 
+    ftps_ok, ftps_message = asyncio.run(_validate_ftps(settings))
+    if settings.use_ftps:
+        _set_ftps_status(True, ftps_ok, ftps_message)
+        if not ftps_ok:
+            return _render(form, ftps_message)
+    else:
+        _set_ftps_status(False, True, "FTPS не используется.")
+
     _store_settings(settings)
     _upsert_current_channel_preference(settings)
 
@@ -1205,7 +1299,7 @@ def start_download():
     if started:
         return _render(
             form,
-            f"{proxy_status['message']} {sftp_status['message']} {channel_message} {start_message}",
+            f"{proxy_status['message']} {sftp_status['message']} {ftps_status['message']} {channel_message} {start_message}",
         )
     return _render(form, start_message)
 
@@ -1224,6 +1318,22 @@ def check_sftp():
     else:
         _set_sftp_status(False, True, "SFTP не используется.")
     return _render(form, sftp_status["message"])
+
+
+@app.post("/check_ftps")
+def check_ftps():
+    form = _form_from_request()
+    try:
+        settings = _build_settings(form, require_channel=False)
+    except ValueError as exc:
+        return _render(form, str(exc))
+
+    ftps_ok, ftps_message = asyncio.run(_validate_ftps(settings))
+    if settings.use_ftps:
+        _set_ftps_status(True, ftps_ok, ftps_message)
+    else:
+        _set_ftps_status(False, True, "FTPS не используется.")
+    return _render(form, ftps_status["message"])
 
 
 @app.post("/channels_status")
@@ -1254,6 +1364,7 @@ def channels_preferences_update():
     check_new = request.form.get("check_new") == "1"
     auto_download = request.form.get("auto_download") == "1"
     auto_sftp = request.form.get("auto_sftp") == "1"
+    auto_ftps = request.form.get("auto_ftps") == "1"
     cleanup_local = request.form.get("cleanup_local") == "1"
 
     if not channel_ref:
@@ -1268,13 +1379,18 @@ def channels_preferences_update():
             check_new=check_new,
             auto_download=auto_download,
             auto_sftp=auto_sftp,
+            auto_ftps=auto_ftps,
             cleanup_local=cleanup_local,
         )
     finally:
         db.close()
 
     # Update global default cleanup option for manual runs.
-    settings = replace(settings, cleanup_local_after_sftp=cleanup_local)
+    settings = replace(
+        settings,
+        cleanup_local_after_sftp=cleanup_local,
+        cleanup_local_after_ftps=cleanup_local,
+    )
     _store_settings(settings)
     return jsonify({"ok": True, "message": "Настройки канала сохранены."})
 

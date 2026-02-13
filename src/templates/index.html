@@ -486,6 +486,55 @@
             </div>
           </div>
           <div class="full">
+            <div class="check-row">
+              <input id="use_ftps" type="checkbox" name="use_ftps" {% if form.use_ftps %}checked{% endif %}>
+              <label for="use_ftps">Загружать на FTPS</label>
+              <span class="help" tabindex="0" data-tip="Если включено, после скачивания главы будут загружаться в удалённый каталог по FTPS (FTP over TLS).">?</span>
+            </div>
+          </div>
+          <div id="ftps-group" class="full {% if not form.use_ftps %}hidden{% endif %}">
+            <div class="grid">
+              <div>
+                <div class="label-row">
+                  <label>FTPS_HOST</label>
+                </div>
+                <input type="password" name="ftps_host" value="{{ form.ftps_host }}" placeholder="ftps.example.com">
+              </div>
+              <div>
+                <div class="label-row">
+                  <label>FTPS_PORT</label>
+                </div>
+                <input type="password" name="ftps_port" value="{{ form.ftps_port }}" placeholder="21">
+              </div>
+              <div>
+                <div class="label-row">
+                  <label>FTPS_USERNAME</label>
+                </div>
+                <input type="password" name="ftps_username" value="{{ form.ftps_username }}" placeholder="username">
+              </div>
+              <div>
+                <div class="label-row">
+                  <label>FTPS_PASSWORD</label>
+                </div>
+                <input type="password" name="ftps_password" value="{{ form.ftps_password }}" placeholder="password">
+              </div>
+              <div class="full">
+                <div class="label-row">
+                  <label>FTPS_REMOTE_DIR</label>
+                  <span class="help" tabindex="0" data-tip="Базовый удалённый каталог. Внутри него автоматически создаётся подпапка с названием книги (канала).">?</span>
+                </div>
+                <input name="ftps_remote_dir" value="{{ form.ftps_remote_dir }}" placeholder="/uploads/books">
+              </div>
+              <div class="full">
+                <div class="check-row">
+                  <input id="cleanup_local_after_ftps" type="checkbox" name="cleanup_local_after_ftps" {% if form.cleanup_local_after_ftps %}checked{% endif %}>
+                  <label for="cleanup_local_after_ftps">Удалять локальный файл после подтверждённой загрузки на FTPS</label>
+                  <span class="help" tabindex="0" data-tip="Удаление происходит только после проверки размера и SHA-256 хэша удалённого файла.">?</span>
+                </div>
+              </div>
+            </div>
+          </div>
+          <div class="full">
             <div class="label-row">
               <label>Путь сохранения аудио</label>
               <span class="help" tabindex="0" data-tip="Базовая локальная папка. Внутри неё бот автоматически создаст подпапку с названием канала.">?</span>
@@ -557,6 +606,7 @@
         <div class="btn-row">
           <button class="btn" formaction="/authorize" type="submit">Авторизоваться</button>
           <button class="btn secondary" formaction="/check_sftp" type="submit">Проверить SFTP</button>
+          <button class="btn secondary" formaction="/check_ftps" type="submit">Проверить FTPS</button>
           <button class="btn secondary" formaction="/preview" type="submit">Обновить предпросмотр</button>
           <button class="btn" formaction="/start" type="submit">Начать скачивание</button>
           <button class="btn secondary" formaction="/stop_download" type="submit">Прервать загрузку</button>
@@ -605,11 +655,23 @@
             <span class="stop">не используется</span>
           {% endif %}
         </div>
+        <div id="status-ftps">
+          FTPS:
+          {% if ftps_status.enabled %}
+            {% if ftps_status.available %}
+              <span class="run">подключение установлено</span>
+            {% else %}
+              <span class="stop">ошибка подключения</span>
+            {% endif %}
+          {% else %}
+            <span class="stop">не используется</span>
+          {% endif %}
+        </div>
         <div id="status-counters">
           Скачано: {{ status.downloaded }} | Ошибок: {{ status.failed }} | Пропущено: {{ status.skipped }}
         </div>
         <div id="status-sftp-counters">
-          SFTP: загружено {{ status.sftp_uploaded }} | пропущено {{ status.sftp_skipped }} | ошибок {{ status.sftp_failed }}
+          Upload: загружено {{ status.sftp_uploaded }} | пропущено {{ status.sftp_skipped }} | ошибок {{ status.sftp_failed }}
         </div>
         <div id="status-concurrency">
           Параллельность: {{ status.current_concurrency }} / {{ status.configured_concurrency }}
@@ -709,8 +771,15 @@
         sftpClass = s.sftp_available ? 'run' : 'stop';
       }
       document.getElementById('status-sftp').innerHTML = `SFTP: <span class="${sftpClass}">${sftpText}</span>`;
+      let ftpsText = 'не используется';
+      let ftpsClass = 'stop';
+      if (s.ftps_enabled) {
+        ftpsText = s.ftps_available ? 'подключение установлено' : 'ошибка подключения';
+        ftpsClass = s.ftps_available ? 'run' : 'stop';
+      }
+      document.getElementById('status-ftps').innerHTML = `FTPS: <span class="${ftpsClass}">${ftpsText}</span>`;
       document.getElementById('status-counters').textContent = `Скачано: ${s.downloaded || 0} | Ошибок: ${s.failed || 0} | Пропущено: ${s.skipped || 0}`;
-      document.getElementById('status-sftp-counters').textContent = `SFTP: загружено ${s.sftp_uploaded || 0} | пропущено ${s.sftp_skipped || 0} | ошибок ${s.sftp_failed || 0}`;
+      document.getElementById('status-sftp-counters').textContent = `Upload: загружено ${s.sftp_uploaded || 0} | пропущено ${s.sftp_skipped || 0} | ошибок ${s.sftp_failed || 0}`;
       document.getElementById('status-concurrency').textContent = `Параллельность: ${s.current_concurrency || 1} / ${s.configured_concurrency || 1}`;
       document.getElementById('status-progress').textContent = `Прогресс файла: ${s.progress_percent || 0}% (${s.progress_received || 0} / ${s.progress_total || 0} байт)`;
       document.getElementById('status-current').textContent = `Текущий message_id: ${s.current_message_id || ''}`;
@@ -832,6 +901,37 @@
     document.getElementById('use_sftp').addEventListener('change', toggleSftpField);
     toggleSftpField();
 
+    function toggleFtpsField() {
+      const useFtps = document.getElementById('use_ftps').checked;
+      const group = document.getElementById('ftps-group');
+      if (useFtps) {
+        group.classList.remove('hidden');
+      } else {
+        group.classList.add('hidden');
+      }
+    }
+
+    document.getElementById('use_ftps').addEventListener('change', toggleFtpsField);
+    toggleFtpsField();
+
+    // Allow only one remote upload protocol at a time.
+    document.getElementById('use_sftp').addEventListener('change', (e) => {
+      if (e.target.checked) {
+        document.getElementById('use_ftps').checked = false;
+        toggleFtpsField();
+      }
+    });
+    document.getElementById('use_ftps').addEventListener('change', (e) => {
+      if (e.target.checked) {
+        document.getElementById('use_sftp').checked = false;
+        toggleSftpField();
+      }
+    });
+    if (document.getElementById('use_sftp').checked && document.getElementById('use_ftps').checked) {
+      document.getElementById('use_ftps').checked = false;
+      toggleFtpsField();
+    }
+
     async function loadChannelMenu() {
       const form = document.querySelector('form');
       const data = new FormData(form);
@@ -865,6 +965,7 @@
           btn.addEventListener('click', () => {
             document.getElementById('channel_id').value = item.channel_ref || '';
             document.getElementById('cleanup_local_after_sftp').checked = !!item.cleanup_local;
+            document.getElementById('cleanup_local_after_ftps').checked = !!item.cleanup_local;
             document.getElementById('status-file').textContent = `Последний файл: ${item.last_file_path || ''}`;
             document.getElementById('status-current').textContent = `Текущий message_id: ${item.last_message_id || ''}`;
           });
@@ -874,11 +975,13 @@
             <label class="check-row"><input type="checkbox" data-pref="check_new">Проверять новые главы</label>
             <label class="check-row"><input type="checkbox" data-pref="auto_download">Включить автозагрузку</label>
             <label class="check-row"><input type="checkbox" data-pref="auto_sftp">Включить автозагрузку на SFTP</label>
-            <label class="check-row"><input type="checkbox" data-pref="cleanup_local">Очистка локального после SFTP</label>
+            <label class="check-row"><input type="checkbox" data-pref="auto_ftps">Включить автозагрузку на FTPS</label>
+            <label class="check-row"><input type="checkbox" data-pref="cleanup_local">Очистка локального после выгрузки</label>
           `;
           prefWrap.querySelector('input[data-pref="check_new"]').checked = !!item.check_new;
           prefWrap.querySelector('input[data-pref="auto_download"]').checked = !!item.auto_download;
           prefWrap.querySelector('input[data-pref="auto_sftp"]').checked = !!item.auto_sftp;
+          prefWrap.querySelector('input[data-pref="auto_ftps"]').checked = !!item.auto_ftps;
           prefWrap.querySelector('input[data-pref="cleanup_local"]').checked = !!item.cleanup_local;
 
           const saveBtn = document.createElement('button');
@@ -893,6 +996,7 @@
             data.set('check_new', prefWrap.querySelector('input[data-pref="check_new"]').checked ? '1' : '0');
             data.set('auto_download', prefWrap.querySelector('input[data-pref="auto_download"]').checked ? '1' : '0');
             data.set('auto_sftp', prefWrap.querySelector('input[data-pref="auto_sftp"]').checked ? '1' : '0');
+            data.set('auto_ftps', prefWrap.querySelector('input[data-pref="auto_ftps"]').checked ? '1' : '0');
             data.set('cleanup_local', prefWrap.querySelector('input[data-pref="cleanup_local"]').checked ? '1' : '0');
             const response = await fetch('/channels_preferences_update', { method: 'POST', body: data });
             const result = await response.json();

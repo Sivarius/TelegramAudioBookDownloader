@@ -8,13 +8,13 @@ Python-скрипт для отслеживания публичного Telegra
 Repository: `amatsukine/telegram-audiobook-downloader`
 
 Short description (EN, <=100 chars):
-`Telegram user-API audiobook channel downloader with web UI, MTProxy, and optional SFTP upload.`
+`Telegram user-API audiobook channel downloader with web UI, MTProxy, and optional SFTP/FTPS upload.`
 
 Короткое описание (RU, <=100 chars):
-`Загрузчик аудиокниг из Telegram-каналов через user API с веб UI, MTProxy и SFTP.`
+`Загрузчик аудиокниг из Telegram-каналов через user API с веб UI, MTProxy и SFTP/FTPS.`
 
 Full description (EN):
-`TelegramAudioBookDownloader` is a web-based service that connects to Telegram via **user API (Telethon)**, monitors audiobook channels, downloads audio chapters, and can optionally upload files to SFTP.
+`TelegramAudioBookDownloader` is a web-based service that connects to Telegram via **user API (Telethon)**, monitors audiobook channels, downloads audio chapters, and can optionally upload files to SFTP or FTPS.
 
 Key features:
 - Telegram authorization with saved session (`remember me`)
@@ -23,14 +23,14 @@ Key features:
 - Resume-safe downloads via `.part` files and integrity checks
 - MTProxy support via a single proxy link field
 - Channel history with periodic checks and auto-download rules
-- Optional SFTP upload with remote duplicate check and hash/size verification
+- Optional SFTP/FTPS upload with remote duplicate check and hash/size verification
 - SQLite state tracking per channel (resume from last downloaded chapter)
 - Docker/Docker Compose ready
 
-Use this image if you need a self-hosted service to continuously collect audiobook chapters from Telegram channels and optionally mirror them to SFTP.
+Use this image if you need a self-hosted service to continuously collect audiobook chapters from Telegram channels and optionally mirror them to SFTP/FTPS.
 
 Полное описание (RU):
-`TelegramAudioBookDownloader` - веб-сервис, который подключается к Telegram через **user API (Telethon)**, отслеживает каналы с аудиокнигами, скачивает главы и при необходимости загружает их на SFTP.
+`TelegramAudioBookDownloader` - веб-сервис, который подключается к Telegram через **user API (Telethon)**, отслеживает каналы с аудиокнигами, скачивает главы и при необходимости загружает их на SFTP или FTPS.
 
 Основные возможности:
 - Авторизация Telegram с сохранением сессии (`запомнить меня`)
@@ -39,11 +39,11 @@ Use this image if you need a self-hosted service to continuously collect audiobo
 - Безопасная докачка через `.part` и проверки целостности
 - Поддержка MTProxy через одно поле-ссылку
 - История каналов, периодические проверки и правила автозагрузки
-- Опциональная загрузка на SFTP с проверкой дублей и сверкой hash/размера
+- Опциональная загрузка на SFTP/FTPS с проверкой дублей и сверкой hash/размера
 - Хранение состояния в SQLite по каждому каналу (продолжение с последней главы)
 - Готовность к запуску в Docker/Docker Compose
 
-Используйте этот образ, если нужен self-hosted сервис для постоянного сбора глав аудиокниг из Telegram-каналов и опционального зеркалирования на SFTP.
+Используйте этот образ, если нужен self-hosted сервис для постоянного сбора глав аудиокниг из Telegram-каналов и опционального зеркалирования на SFTP/FTPS.
 
 ## Что делает
 - Подключается как пользователь Telegram (не bot API)
@@ -61,6 +61,7 @@ Use this image if you need a self-hosted service to continuously collect audiobo
 - Telegram API credentials (`api_id`, `api_hash`) с https://my.telegram.org
 - Для высокой скорости загрузки рекомендуется `cryptg` (устанавливается из `requirements.txt`)
 - Для загрузки на SFTP используется `paramiko` (устанавливается из `requirements.txt`)
+- Для загрузки на FTPS используется стандартный `ftplib.FTP_TLS` из Python
 
 ## Быстрый старт
 1. Запустить веб-интерфейс:
@@ -130,6 +131,11 @@ docker compose -f docker-compose.prod.yml down
   - перед загрузкой сверяется с файлами на SFTP и не грузит повторы
   - после загрузки проверяет совпадение размера и SHA-256 хэша
   - есть отдельная кнопка `Проверить SFTP`
+- `Загружать на FTPS`:
+  - после скачивания локальной главы загружает её в удалённый каталог
+  - перед загрузкой сверяется с файлами на FTPS и не грузит повторы
+  - после загрузки проверяет совпадение размера и SHA-256 хэша
+  - есть отдельная кнопка `Проверить FTPS`
 - `История каналов`:
   - показывает ранее использованные `channel_id` с названием канала
   - отображает статус наличия новых аудио для быстрого переключения
@@ -137,6 +143,7 @@ docker compose -f docker-compose.prod.yml down
     - `Проверять наличие новых глав`
     - `Включить автозагрузку`
     - `Включить автозагрузку на SFTP`
+    - `Включить автозагрузку на FTPS`
     - `Очистка локального после SFTP`
   - сервис проверяет каналы по расписанию (по умолчанию раз в 2 часа)
   - фоновая периодическая проверка выключена по умолчанию и включается чекбоксом `Периодически проверять новые главы`
@@ -177,6 +184,13 @@ docker compose -f docker-compose.prod.yml down
 - `SFTP_PASSWORD` - пароль
 - `SFTP_REMOTE_DIR` - базовый удаленный каталог для книг
 - `CLEANUP_LOCAL_AFTER_SFTP` - `1` или `0`, удалять локальный файл после подтверждённой SFTP загрузки
+- `USE_FTPS` - `1` или `0`
+- `FTPS_HOST` - адрес FTPS сервера
+- `FTPS_PORT` - порт FTPS (по умолчанию `21`)
+- `FTPS_USERNAME` - логин
+- `FTPS_PASSWORD` - пароль
+- `FTPS_REMOTE_DIR` - базовый удаленный каталог для книг
+- `CLEANUP_LOCAL_AFTER_FTPS` - `1` или `0`, удалять локальный файл после подтверждённой FTPS загрузки
 - `AUTO_CHECK_INTERVAL_SECONDS` - интервал проверки каналов для автозадач (по умолчанию `7200`)
 
 ## Примечания

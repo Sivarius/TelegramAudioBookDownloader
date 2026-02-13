@@ -136,6 +136,26 @@ def load_settings(db: AppDatabase) -> Settings:
     if use_sftp and (not sftp_host or not sftp_username):
         raise ValueError("USE_SFTP is enabled but SFTP_HOST/SFTP_USERNAME is empty.")
 
+    use_ftps = _to_bool(_env_or_db("USE_FTPS", db) or "0")
+    ftps_host = _env_or_db("FTPS_HOST", db)
+    ftps_port_raw = _env_or_db("FTPS_PORT", db) or "21"
+    ftps_username = _env_or_db("FTPS_USERNAME", db)
+    ftps_password = _env_or_db("FTPS_PASSWORD", db)
+    ftps_remote_dir = _env_or_db("FTPS_REMOTE_DIR", db) or "/uploads"
+    cleanup_local_after_ftps = _to_bool(
+        _env_or_db("CLEANUP_LOCAL_AFTER_FTPS", db) or "0"
+    )
+    try:
+        ftps_port = int(ftps_port_raw)
+    except ValueError as exc:
+        raise ValueError("FTPS_PORT must be an integer") from exc
+
+    if use_ftps and (not ftps_host or not ftps_username):
+        raise ValueError("USE_FTPS is enabled but FTPS_HOST/FTPS_USERNAME is empty.")
+
+    if use_sftp and use_ftps:
+        raise ValueError("USE_SFTP and USE_FTPS cannot be enabled together.")
+
     return Settings(
         api_id=api_id,
         api_hash=api_hash,
@@ -154,4 +174,11 @@ def load_settings(db: AppDatabase) -> Settings:
         sftp_password=sftp_password,
         sftp_remote_dir=sftp_remote_dir,
         cleanup_local_after_sftp=cleanup_local_after_sftp,
+        use_ftps=use_ftps,
+        ftps_host=ftps_host,
+        ftps_port=ftps_port,
+        ftps_username=ftps_username,
+        ftps_password=ftps_password,
+        ftps_remote_dir=ftps_remote_dir,
+        cleanup_local_after_ftps=cleanup_local_after_ftps,
     )
