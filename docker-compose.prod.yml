@@ -1,0 +1,18 @@
+services:
+  telegaparser:
+    build: .
+    image: sivarius/telegram-audiobook-downloader:latest
+    container_name: telegaparser
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      APP_HOST: 0.0.0.0
+      APP_PORT: 8080
+      OPEN_BROWSER: 0
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./downloads:/app/downloads
+      - ./bot_data.sqlite3:/app/bot_data.sqlite3
+      - ./user_session.session:/app/user_session.session

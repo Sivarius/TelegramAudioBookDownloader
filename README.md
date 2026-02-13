@@ -43,16 +43,26 @@ install_dependencies.bat
 
 ## Docker Compose
 1. Заполнить `.env` (если файла нет, скопировать из `.env.example`).
-2. Запустить:
+2. Для dev-режима (монтируется весь проект):
    ```bash
    docker compose up -d --build
    ```
-3. Открыть:
+3. Для prod-режима (только данные, без монтирования исходников):
+   ```bash
+   # один раз перед запуском:
+   type nul > bot_data.sqlite3
+   type nul > user_session.session
+
+   docker compose -f docker-compose.prod.yml up -d --build
+   ```
+4. Открыть:
    - `http://127.0.0.1:8080`
 
 Остановка:
 ```bash
 docker compose down
+# или для prod:
+docker compose -f docker-compose.prod.yml down
 ```
 
 ## Веб-интерфейс
