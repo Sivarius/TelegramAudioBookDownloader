@@ -30,4 +30,5 @@ class Settings:
     ftps_verify_tls: bool
     ftps_passive_mode: bool
     ftps_security_mode: str
+    ftps_upload_concurrency: int
     cleanup_local_after_ftps: bool

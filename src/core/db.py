@@ -125,6 +125,7 @@ class AppDatabase:
         self.set_setting("FTPS_VERIFY_TLS", "1" if settings.ftps_verify_tls else "0")
         self.set_setting("FTPS_PASSIVE_MODE", "1" if settings.ftps_passive_mode else "0")
         self.set_setting("FTPS_SECURITY_MODE", settings.ftps_security_mode)
+        self.set_setting("FTPS_UPLOAD_CONCURRENCY", str(settings.ftps_upload_concurrency))
         self.set_setting(
             "CLEANUP_LOCAL_AFTER_FTPS",
             "1" if settings.cleanup_local_after_ftps else "0",
@@ -395,10 +396,10 @@ class AppDatabase:
     def get_channel_state_by_ref(self, channel_ref: str) -> dict:
         ref = (channel_ref or "").strip()
         if not ref:
-            return {"last_message_id": 0, "last_file_path": ""}
+            return {"last_message_id": 0, "last_file_path": "", "download_folder": ""}
         cur = self._conn.execute(
             """
-            SELECT last_message_id, last_file_path
+            SELECT last_message_id, last_file_path, download_folder
             FROM channel_state
             WHERE channel_ref = ?
             """,
@@ -406,8 +407,9 @@ class AppDatabase:
         )
         row = cur.fetchone()
         if not row:
-            return {"last_message_id": 0, "last_file_path": ""}
+            return {"last_message_id": 0, "last_file_path": "", "download_folder": ""}
         return {
             "last_message_id": int(row[0] or 0),
             "last_file_path": row[1] or "",
+            "download_folder": row[2] or "",
         }

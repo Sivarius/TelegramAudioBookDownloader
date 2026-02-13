@@ -142,8 +142,33 @@ async def download_if_needed(
         logging.info("Downloaded message_id=%s to %s", message.id, file_path)
         if remote_sync and getattr(remote_sync, "enabled", False):
             try:
+                if status_hook:
+                    status_hook(
+                        {
+                            "event": "uploading",
+                            "message_id": message.id,
+                            "file_path": str(file_path),
+                            "transport": str(getattr(remote_sync, "name", "REMOTE")),
+                        }
+                    )
+
+                def _upload_progress(received: int, total: int) -> None:
+                    if not status_hook:
+                        return
+                    percent = int((received * 100) / total) if total > 0 else 0
+                    status_hook(
+                        {
+                            "event": "upload_progress",
+                            "message_id": message.id,
+                            "received": int(received),
+                            "total": int(total),
+                            "percent": int(percent),
+                            "transport": str(getattr(remote_sync, "name", "REMOTE")),
+                        }
+                    )
+
                 uploaded, sftp_info = await asyncio.to_thread(
-                    remote_sync.upload_file_if_needed, str(file_path)
+                    remote_sync.upload_file_if_needed, str(file_path), _upload_progress
                 )
                 transport = str(getattr(remote_sync, "name", "REMOTE"))
                 if status_hook:
@@ -207,6 +232,172 @@ async def download_if_needed(
                 logging.warning("Failed to remove temp file: %s", temp_path)
         if status_hook:
             status_hook({"event": "failed", "message_id": message.id, "reason": str(exc)})
+
+
+def _build_remote_sync(settings: Settings) -> Optional[object]:
+    if settings.use_sftp:
+        return SFTPSync(settings)
+    if settings.use_ftps:
+        return FTPSSync(settings)
+    return None
+
+
+async def run_remote_uploader(
+    settings: Settings,
+    db_path: Path,
+    status_hook: Optional[Callable[[dict], None]] = None,
+    stop_requested: Optional[Callable[[], bool]] = None,
+) -> None:
+    remote_sync = _build_remote_sync(settings)
+    if not remote_sync or not getattr(remote_sync, "enabled", False):
+        raise RuntimeError("Включите SFTP или FTPS для загрузки.")
+
+    db = AppDatabase(db_path)
+    try:
+        state = db.get_channel_state_by_ref(settings.channel)
+        folder_raw = str(state.get("download_folder", "") or "").strip()
+        if not folder_raw:
+            fallback = settings.download_dir / sanitize_folder_name(settings.channel)
+            folder_raw = str(fallback)
+        local_dir = Path(folder_raw)
+        if not local_dir.exists() or not local_dir.is_dir():
+            raise RuntimeError(f"Локальная папка для upload не найдена: {local_dir}")
+
+        files = sorted(
+            [
+                p
+                for p in local_dir.iterdir()
+                if p.is_file() and p.suffix.lower() != ".part"
+            ],
+            key=lambda p: p.name.lower(),
+        )
+        if not files:
+            if status_hook:
+                status_hook({"event": "upload_done", "message": "Нет файлов для загрузки."})
+            return
+
+        channel_folder = local_dir.name
+        transport = str(getattr(remote_sync, "name", "REMOTE"))
+        concurrency = max(1, int(getattr(settings, "ftps_upload_concurrency", 1)))
+        if status_hook:
+            status_hook(
+                {
+                    "event": "upload_started",
+                    "message": f"{transport}: подготовка загрузки {len(files)} файлов.",
+                    "concurrency": concurrency,
+                }
+            )
+
+        async def _run_upload_once(sync_client: object, file_path: Path, transfer_id: str) -> None:
+            if status_hook:
+                status_hook(
+                    {
+                        "event": "uploading",
+                        "message_id": transfer_id,
+                        "file_path": str(file_path),
+                        "transport": transport,
+                    }
+                )
+
+            def _upload_progress(received: int, total: int) -> None:
+                if not status_hook:
+                    return
+                percent = int((received * 100) / total) if total > 0 else 0
+                status_hook(
+                    {
+                        "event": "upload_progress",
+                        "message_id": transfer_id,
+                        "received": int(received),
+                        "total": int(total),
+                        "percent": int(percent),
+                        "transport": transport,
+                    }
+                )
+
+            uploaded, info = await asyncio.to_thread(
+                sync_client.upload_file_if_needed, str(file_path), _upload_progress
+            )
+            if status_hook:
+                status_hook(
+                    {
+                        "event": "sftp_uploaded" if uploaded else "sftp_skipped",
+                        "message_id": transfer_id,
+                        "file_path": str(file_path),
+                        "sftp_info": info,
+                        "transport": transport,
+                    }
+                )
+                status_hook(
+                    {
+                        "event": "upload_done",
+                        "message_id": transfer_id,
+                        "file_path": str(file_path),
+                        "transport": transport,
+                    }
+                )
+
+        if concurrency <= 1:
+            await asyncio.to_thread(remote_sync.connect)
+            await asyncio.to_thread(remote_sync.prepare_channel_dir, channel_folder)
+            if status_hook:
+                status_hook(
+                    {
+                        "event": "sftp_ready",
+                        "message": f"{transport} готов: {getattr(remote_sync, 'remote_channel_dir', '')}",
+                        "transport": transport,
+                    }
+                )
+            try:
+                for file_path in files:
+                    if stop_requested and stop_requested():
+                        break
+                    transfer_id = f"upload:{file_path.name}"
+                    await _run_upload_once(remote_sync, file_path, transfer_id)
+            finally:
+                await asyncio.to_thread(remote_sync.close)
+            return
+
+        queue: asyncio.Queue[Path] = asyncio.Queue()
+        for path in files:
+            queue.put_nowait(path)
+
+        sync_cls = type(remote_sync)
+
+        async def _worker(worker_index: int) -> None:
+            sync_client = sync_cls(settings)
+            await asyncio.to_thread(sync_client.connect)
+            await asyncio.to_thread(sync_client.prepare_channel_dir, channel_folder)
+            try:
+                while True:
+                    if stop_requested and stop_requested():
+                        return
+                    try:
+                        file_path = queue.get_nowait()
+                    except asyncio.QueueEmpty:
+                        return
+                    transfer_id = f"upload:{worker_index}:{file_path.name}"
+                    try:
+                        await _run_upload_once(sync_client, file_path, transfer_id)
+                    except Exception as exc:
+                        if status_hook:
+                            status_hook(
+                                {
+                                    "event": "sftp_failed",
+                                    "message_id": transfer_id,
+                                    "file_path": str(file_path),
+                                    "reason": str(exc),
+                                    "transport": transport,
+                                }
+                            )
+                    finally:
+                        queue.task_done()
+            finally:
+                await asyncio.to_thread(sync_client.close)
+
+        workers = [asyncio.create_task(_worker(i + 1)) for i in range(concurrency)]
+        await asyncio.gather(*workers, return_exceptions=True)
+    finally:
+        db.close()
 
 
 async def initial_backfill(
@@ -315,11 +506,7 @@ async def run_downloader(
     live_mode: bool = True,
 ) -> None:
     db = AppDatabase(db_path)
-    remote_sync: Optional[object] = None
-    if settings.use_sftp:
-        remote_sync = SFTPSync(settings)
-    elif settings.use_ftps:
-        remote_sync = FTPSSync(settings)
+    remote_sync: Optional[object] = _build_remote_sync(settings)
     client = None
     try:
         settings.download_dir.mkdir(parents=True, exist_ok=True)

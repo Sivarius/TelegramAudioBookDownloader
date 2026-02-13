@@ -5,7 +5,7 @@ import socket
 import ssl
 import threading
 from ftplib import FTP_TLS, error_perm
-from typing import Optional
+from typing import Callable, Optional
 
 from core.models import Settings
 
@@ -187,7 +187,11 @@ class FTPSSync:
                 self._ftps.mkd(current)
                 self._ftps.cwd(current)
 
-    def upload_file_if_needed(self, local_file_path: str) -> tuple[bool, str]:
+    def upload_file_if_needed(
+        self,
+        local_file_path: str,
+        progress_callback: Optional[Callable[[int, int], None]] = None,
+    ) -> tuple[bool, str]:
         if not self.enabled:
             return False, "FTPS выключен."
         if not self._ftps:
@@ -205,8 +209,24 @@ class FTPSSync:
             if file_name in self._remote_file_names:
                 uploaded = False
             else:
+                total_size = os.path.getsize(local_file_path)
+                sent_bytes = 0
+
+                def _block_progress(chunk: bytes) -> None:
+                    nonlocal sent_bytes
+                    sent_bytes += len(chunk)
+                    if progress_callback:
+                        progress_callback(min(sent_bytes, total_size), total_size)
+
                 with open(local_file_path, "rb") as file_obj:
-                    self._ftps.storbinary(f"STOR {remote_path}", file_obj, blocksize=1024 * 256)
+                    self._ftps.storbinary(
+                        f"STOR {remote_path}",
+                        file_obj,
+                        blocksize=1024 * 256,
+                        callback=_block_progress,
+                    )
+                if progress_callback:
+                    progress_callback(total_size, total_size)
                 self._remote_file_names.add(file_name)
                 uploaded = True
 

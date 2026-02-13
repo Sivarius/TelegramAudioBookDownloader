@@ -489,6 +489,7 @@
             <button class="btn secondary" formaction="/check_ftps" type="submit">Проверить FTPS</button>
             <button class="btn secondary" formaction="/preview" type="submit">Обновить предпросмотр</button>
             <button class="btn" formaction="/start" type="submit">Начать скачивание</button>
+            <button class="btn secondary" formaction="/start_upload" type="submit">Начать загрузку</button>
             <button class="btn secondary" formaction="/stop_download" type="submit">Прервать загрузку</button>
             <button class="btn secondary" formaction="/stop_server" type="submit">Стоп сервер</button>
           </div>
@@ -650,6 +651,13 @@
                     <label for="ftps_passive_mode">Режим передачи: пассивный</label>
                   </div>
                 </div>
+                <div class="field-sm">
+                  <div class="label-row">
+                    <label>Потоков upload</label>
+                    <span class="help" tabindex="0" data-tip="Сколько файлов одновременно выгружать на удаленный сервер в режиме кнопки 'Начать загрузку'.">?</span>
+                  </div>
+                  <input name="ftps_upload_concurrency" value="{{ form.ftps_upload_concurrency }}" placeholder="2">
+                </div>
                 <div class="full">
                   <div class="check-row">
                     <input id="ftps_verify_tls" type="checkbox" name="ftps_verify_tls" {% if form.ftps_verify_tls %}checked{% endif %}>
@@ -732,6 +740,7 @@
           Параллельность: {{ status.current_concurrency }} / {{ status.configured_concurrency }}
         </div>
         <div id="status-progress">Прогресс файла: {{ status.progress_percent }}% ({{ status.progress_received }} / {{ status.progress_total }} байт)</div>
+        <div id="status-upload-progress">Upload: {{ status.upload_progress_percent }}% ({{ status.upload_progress_received }} / {{ status.upload_progress_total }} байт) | 0 B/s | ETA: —</div>
         <div id="file-progress-list" class="table-wrap" style="max-height:none; margin-top:8px;">
           <table>
             <thead>
@@ -743,6 +752,20 @@
             </thead>
             <tbody id="file-progress-body">
               <tr><td colspan="3">Нет активных загрузок.</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <div id="upload-progress-list" class="table-wrap" style="max-height:none; margin-top:8px;">
+          <table>
+            <thead>
+              <tr>
+                <th>upload</th>
+                <th>Прогресс</th>
+                <th>Статус</th>
+              </tr>
+            </thead>
+            <tbody id="upload-progress-body">
+              <tr><td colspan="3">Нет активных upload задач.</td></tr>
             </tbody>
           </table>
         </div>
@@ -839,10 +862,12 @@
       document.getElementById('status-sftp-counters').textContent = `Upload: загружено ${s.sftp_uploaded || 0} | пропущено ${s.sftp_skipped || 0} | ошибок ${s.sftp_failed || 0}`;
       document.getElementById('status-concurrency').textContent = `Параллельность: ${s.current_concurrency || 1} / ${s.configured_concurrency || 1}`;
       document.getElementById('status-progress').textContent = `Прогресс файла: ${s.progress_percent || 0}% (${s.progress_received || 0} / ${s.progress_total || 0} байт)`;
+      document.getElementById('status-upload-progress').textContent = `Upload: ${s.upload_progress_percent || 0}% (${s.upload_progress_received || 0} / ${s.upload_progress_total || 0} байт) | ${formatSpeed(s.upload_progress_speed_bps || 0)} | ETA: ${formatEta(s.upload_progress_eta_sec || 0)}`;
       document.getElementById('status-current').textContent = `Текущий message_id: ${s.current_message_id || ''}`;
       document.getElementById('status-file').textContent = `Последний файл: ${s.last_file || ''}`;
       document.getElementById('status-updated').textContent = `Обновлено: ${s.updated_at || ''}`;
       renderFileProgresses(s.file_progresses || {});
+      renderUploadProgresses(s.upload_file_progresses || {});
     }
 
     function renderFileProgresses(itemsMap) {
@@ -852,7 +877,7 @@
         body.innerHTML = '<tr><td colspan="3">Нет активных загрузок.</td></tr>';
         return;
       }
-      entries.sort((a, b) => Number(b[0]) - Number(a[0]));
+      entries.sort((a, b) => String(b[0]).localeCompare(String(a[0])));
       const viewEntries = entries.slice(0, 3);
       body.innerHTML = '';
       viewEntries.forEach(([messageId, item]) => {
@@ -878,6 +903,43 @@
         const extra = entries.length - viewEntries.length;
         const row = document.createElement('tr');
         row.innerHTML = `<td colspan="3">Ещё ${extra} файла(ов) в очереди...</td>`;
+        body.appendChild(row);
+      }
+    }
+
+    function renderUploadProgresses(itemsMap) {
+      const body = document.getElementById('upload-progress-body');
+      const entries = Object.entries(itemsMap || {});
+      if (!entries.length) {
+        body.innerHTML = '<tr><td colspan="3">Нет активных upload задач.</td></tr>';
+        return;
+      }
+      entries.sort((a, b) => String(b[0]).localeCompare(String(a[0])));
+      const viewEntries = entries.slice(0, 3);
+      body.innerHTML = '';
+      viewEntries.forEach(([uploadId, item]) => {
+        const percent = Number(item.percent || 0);
+        const received = Number(item.received || 0);
+        const total = Number(item.total || 0);
+        const state = String(item.state || '');
+        const speedText = formatSpeed(item.speed_bps || 0);
+        const etaText = formatEta(item.eta_sec || 0);
+        const row = document.createElement('tr');
+        row.innerHTML = `
+          <td class="mono">${uploadId}</td>
+          <td class="progress-cell">
+            <progress max="100" value="${percent}"></progress>
+            <div class="progress-meta">${percent}% (${received}/${total})</div>
+            <div class="progress-meta">${speedText} | ETA: ${etaText}</div>
+          </td>
+          <td>${state}</td>
+        `;
+        body.appendChild(row);
+      });
+      if (entries.length > viewEntries.length) {
+        const extra = entries.length - viewEntries.length;
+        const row = document.createElement('tr');
+        row.innerHTML = `<td colspan="3">Ещё ${extra} upload задач(и)...</td>`;
         body.appendChild(row);
       }
     }

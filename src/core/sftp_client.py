@@ -2,7 +2,7 @@ import os
 import posixpath
 import threading
 import hashlib
-from typing import Optional
+from typing import Callable, Optional
 
 import paramiko
 
@@ -109,7 +109,11 @@ class SFTPSync:
             except IOError:
                 self._sftp.mkdir(current)
 
-    def upload_file_if_needed(self, local_file_path: str) -> tuple[bool, str]:
+    def upload_file_if_needed(
+        self,
+        local_file_path: str,
+        progress_callback: Optional[Callable[[int, int], None]] = None,
+    ) -> tuple[bool, str]:
         if not self.enabled:
             return False, "SFTP выключен."
         if not self._sftp:
@@ -127,7 +131,10 @@ class SFTPSync:
             if file_name in self._remote_file_names:
                 uploaded = False
             else:
-                self._sftp.put(local_file_path, remote_path)
+                local_size = os.path.getsize(local_file_path)
+                self._sftp.put(local_file_path, remote_path, callback=progress_callback)
+                if progress_callback:
+                    progress_callback(local_size, local_size)
                 self._remote_file_names.add(file_name)
                 uploaded = True
 

@@ -18,7 +18,7 @@ from telethon.errors import PhoneCodeExpiredError, PhoneCodeInvalidError, Sessio
 
 from core.config import setup_logging
 from core.db import AppDatabase
-from core.downloader import run_downloader
+from core.downloader import run_downloader, run_remote_uploader
 from core.ftps_client import FTPSSync
 from core.models import Settings
 from core.sftp_client import SFTPSync
@@ -91,7 +91,13 @@ worker_status = {
     "progress_percent": 0,
     "progress_received": 0,
     "progress_total": 0,
+    "upload_progress_percent": 0,
+    "upload_progress_received": 0,
+    "upload_progress_total": 0,
+    "upload_progress_speed_bps": 0.0,
+    "upload_progress_eta_sec": 0.0,
     "file_progresses": {},
+    "upload_file_progresses": {},
 }
 preview_cache: list[dict] = []
 auth_status = {
@@ -233,6 +239,7 @@ def _load_saved_form() -> dict:
             "ftps_verify_tls": (db.get_setting("FTPS_VERIFY_TLS") or "1") == "1",
             "ftps_passive_mode": (db.get_setting("FTPS_PASSIVE_MODE") or "1") == "1",
             "ftps_security_mode": db.get_setting("FTPS_SECURITY_MODE") or "explicit",
+            "ftps_upload_concurrency": db.get_setting("FTPS_UPLOAD_CONCURRENCY") or "2",
             "cleanup_local_after_ftps": (db.get_setting("CLEANUP_LOCAL_AFTER_FTPS") or "0") == "1",
             "download_new": False,
             "remember_me": (db.get_setting("REMEMBER_ME") or "1") != "0",
@@ -275,6 +282,7 @@ def _form_from_request() -> dict:
         "ftps_verify_tls": request.form.get("ftps_verify_tls") == "on",
         "ftps_passive_mode": request.form.get("ftps_passive_mode") == "on",
         "ftps_security_mode": request.form.get("ftps_security_mode", saved["ftps_security_mode"]).strip().lower(),
+        "ftps_upload_concurrency": request.form.get("ftps_upload_concurrency", saved["ftps_upload_concurrency"]).strip(),
         "cleanup_local_after_ftps": request.form.get("cleanup_local_after_ftps") == "on",
         "download_new": request.form.get("download_new") == "on",
         "remember_me": request.form.get("remember_me") == "on",
@@ -313,6 +321,9 @@ def _build_settings(form: dict, require_channel: bool = True) -> Settings:
     if ftps_port <= 0:
         ftps_port = 21
     ftps_security_mode = form["ftps_security_mode"] if form["ftps_security_mode"] in {"explicit", "implicit"} else "explicit"
+    ftps_upload_concurrency = _safe_int(form["ftps_upload_concurrency"], 2)
+    if ftps_upload_concurrency < 1:
+        ftps_upload_concurrency = 1
     if form["use_ftps"] and (not form["ftps_host"] or not form["ftps_username"]):
         raise ValueError("Для FTPS заполните host и username.")
     if form["use_sftp"] and form["use_ftps"]:
@@ -345,6 +356,7 @@ def _build_settings(form: dict, require_channel: bool = True) -> Settings:
         ftps_verify_tls=bool(form["ftps_verify_tls"]),
         ftps_passive_mode=bool(form["ftps_passive_mode"]),
         ftps_security_mode=ftps_security_mode,
+        ftps_upload_concurrency=ftps_upload_concurrency,
         cleanup_local_after_ftps=bool(form["cleanup_local_after_ftps"]),
     )
 
@@ -874,6 +886,7 @@ def _start_worker(
     allowed_message_ids: Optional[set[int]],
     live_mode: bool = True,
     source: str = "manual",
+    upload_only: bool = False,
 ) -> tuple[bool, str]:
     global worker_thread, worker_loop, worker_main_task
 
@@ -884,7 +897,7 @@ def _start_worker(
         worker_stop_event.clear()
         _set_status(
             running=True,
-            message=f"Скачивание запущено ({source}).",
+            message=("Upload запущен" if upload_only else "Скачивание запущено") + f" ({source}).",
             downloaded=0,
             failed=0,
             skipped=0,
@@ -894,7 +907,13 @@ def _start_worker(
             progress_percent=0,
             progress_received=0,
             progress_total=0,
+            upload_progress_percent=0,
+            upload_progress_received=0,
+            upload_progress_total=0,
+            upload_progress_speed_bps=0.0,
+            upload_progress_eta_sec=0.0,
             file_progresses={},
+            upload_file_progresses={},
             current_message_id="",
             last_file="",
             configured_concurrency=settings.download_concurrency,
@@ -936,9 +955,46 @@ def _start_worker(
                     current.pop(key, None)
             _set_status(file_progresses=current)
 
+        def _update_upload_progress_item(
+            transfer_id: str,
+            *,
+            percent: Optional[int] = None,
+            received: Optional[int] = None,
+            total: Optional[int] = None,
+            state: Optional[str] = None,
+            file_path: Optional[str] = None,
+            speed_bps: Optional[float] = None,
+            eta_sec: Optional[float] = None,
+        ) -> None:
+            current = dict(worker_status.get("upload_file_progresses", {}))
+            item = dict(current.get(transfer_id, {}))
+            if percent is not None:
+                item["percent"] = int(percent)
+            if received is not None:
+                item["received"] = int(received)
+            if total is not None:
+                item["total"] = int(total)
+            if state is not None:
+                item["state"] = state
+            if file_path:
+                item["file_path"] = file_path
+            if speed_bps is not None:
+                item["speed_bps"] = float(speed_bps)
+            if eta_sec is not None:
+                item["eta_sec"] = float(eta_sec)
+            item["updated_at"] = datetime.now().strftime("%H:%M:%S")
+            current[transfer_id] = item
+            if len(current) > 40:
+                keys = list(current.keys())
+                for key in keys[:-40]:
+                    current.pop(key, None)
+            _set_status(upload_file_progresses=current)
+
         def _status_hook(payload: dict) -> None:
             progress_runtime = getattr(_status_hook, "_progress_runtime", {})
+            upload_runtime = getattr(_status_hook, "_upload_runtime", {})
             setattr(_status_hook, "_progress_runtime", progress_runtime)
+            setattr(_status_hook, "_upload_runtime", upload_runtime)
             event = payload.get("event", "")
             message_id = str(payload.get("message_id", ""))
             if event == "downloading":
@@ -1029,6 +1085,8 @@ def _start_worker(
                 _set_status(message=str(payload.get("message", "Удаленный протокол готов.")))
             elif event == "sftp_uploaded":
                 _update_progress_item(message_id, state="sftp_uploaded")
+                _update_upload_progress_item(message_id, state="uploaded", percent=100, eta_sec=0.0)
+                upload_runtime.pop(message_id, None)
                 transport = str(payload.get("transport", "SFTP"))
                 _set_status(
                     sftp_uploaded=int(worker_status.get("sftp_uploaded", 0)) + 1,
@@ -1036,6 +1094,8 @@ def _start_worker(
                 )
             elif event == "sftp_skipped":
                 _update_progress_item(message_id, state="sftp_skipped")
+                _update_upload_progress_item(message_id, state="skipped", eta_sec=0.0)
+                upload_runtime.pop(message_id, None)
                 transport = str(payload.get("transport", "SFTP"))
                 _set_status(
                     sftp_skipped=int(worker_status.get("sftp_skipped", 0)) + 1,
@@ -1043,11 +1103,79 @@ def _start_worker(
                 )
             elif event == "sftp_failed":
                 _update_progress_item(message_id, state="sftp_failed")
+                _update_upload_progress_item(message_id, state="failed")
+                upload_runtime.pop(message_id, None)
                 transport = str(payload.get("transport", "SFTP"))
                 _set_status(
                     sftp_failed=int(worker_status.get("sftp_failed", 0)) + 1,
                     message=f"{transport} ошибка: message_id={message_id}",
                 )
+            elif event == "uploading":
+                transfer_id = message_id or str(payload.get("file_path", "upload"))
+                _update_upload_progress_item(
+                    transfer_id,
+                    percent=0,
+                    received=0,
+                    total=0,
+                    state="uploading",
+                    file_path=str(payload.get("file_path", "")),
+                    speed_bps=0.0,
+                    eta_sec=0.0,
+                )
+                upload_runtime[transfer_id] = {
+                    "last_received": 0,
+                    "last_ts": time.time(),
+                    "speed_bps": 0.0,
+                }
+                _set_status(message=f"Upload: {transfer_id}")
+            elif event == "upload_progress":
+                transfer_id = message_id or str(payload.get("file_path", "upload"))
+                received = int(payload.get("received", 0))
+                total = int(payload.get("total", 0))
+                now = time.time()
+                state = upload_runtime.get(
+                    transfer_id, {"last_received": 0, "last_ts": now, "speed_bps": 0.0}
+                )
+                delta_bytes = received - int(state.get("last_received", 0))
+                delta_time = now - float(state.get("last_ts", now))
+                speed_bps = float(state.get("speed_bps", 0.0))
+                if delta_bytes > 0 and delta_time > 0.2:
+                    speed_bps = delta_bytes / delta_time
+                eta_sec = 0.0
+                if speed_bps > 1 and total > received:
+                    eta_sec = (total - received) / speed_bps
+                upload_runtime[transfer_id] = {
+                    "last_received": received,
+                    "last_ts": now,
+                    "speed_bps": speed_bps,
+                }
+                _update_upload_progress_item(
+                    transfer_id,
+                    percent=int(payload.get("percent", 0)),
+                    received=received,
+                    total=total,
+                    state="uploading",
+                    speed_bps=speed_bps,
+                    eta_sec=eta_sec,
+                )
+                _set_status(
+                    upload_progress_percent=int(payload.get("percent", 0)),
+                    upload_progress_received=received,
+                    upload_progress_total=total,
+                    upload_progress_speed_bps=speed_bps,
+                    upload_progress_eta_sec=eta_sec,
+                )
+            elif event == "upload_started":
+                _set_status(
+                    current_concurrency=int(payload.get("concurrency", worker_status.get("current_concurrency", 1))),
+                    message=str(payload.get("message", "Upload started.")),
+                )
+            elif event == "upload_done":
+                transfer_id = message_id or ""
+                if transfer_id:
+                    _update_upload_progress_item(transfer_id, state="done", percent=100, eta_sec=0.0)
+                    upload_runtime.pop(transfer_id, None)
+                _set_status(upload_progress_eta_sec=0.0)
             elif event == "local_cleaned":
                 transport = str(payload.get("transport", "SFTP"))
                 _set_status(message=f"Локальный файл удален после {transport}: message_id={message_id}")
@@ -1058,7 +1186,14 @@ def _start_worker(
                 loop = asyncio.new_event_loop()
                 asyncio.set_event_loop(loop)
                 main_task = loop.create_task(
-                    run_downloader(
+                    run_remote_uploader(
+                        settings=settings,
+                        db_path=DB_PATH,
+                        status_hook=_status_hook,
+                        stop_requested=lambda: worker_stop_event.is_set(),
+                    )
+                    if upload_only
+                    else run_downloader(
                         settings=settings,
                         db_path=DB_PATH,
                         allowed_message_ids=allowed_message_ids,
@@ -1096,7 +1231,7 @@ def _start_worker(
         worker_thread = threading.Thread(target=_target, daemon=True)
         worker_thread.start()
 
-    return True, f"Загрузчик запущен ({source})."
+    return True, ("Upload-загрузчик запущен" if upload_only else "Загрузчик запущен") + f" ({source})."
 
 
 def _render(form: dict, message: str = "", need_code: bool = False, need_password: bool = False):
@@ -1319,6 +1454,54 @@ def start_download():
             form,
             f"{proxy_status['message']} {sftp_status['message']} {ftps_status['message']} {channel_message} {start_message}",
         )
+    return _render(form, start_message)
+
+
+@app.post("/start_upload")
+def start_upload():
+    global runtime_remember_me, runtime_session_name
+    form = _form_from_request()
+
+    try:
+        settings = _build_settings(form, require_channel=True)
+    except ValueError as exc:
+        return _render(form, str(exc))
+
+    runtime_remember_me = bool(form["remember_me"])
+    runtime_session_name = settings.session_name
+    _store_remember_me(runtime_remember_me)
+    _store_enable_periodic_checks(bool(form["enable_periodic_checks"]))
+    _store_settings(settings)
+    _upsert_current_channel_preference(settings)
+
+    sftp_ok, sftp_message = asyncio.run(_validate_sftp(settings))
+    if settings.use_sftp:
+        _set_sftp_status(True, sftp_ok, sftp_message)
+        if not sftp_ok:
+            return _render(form, sftp_message)
+    else:
+        _set_sftp_status(False, True, "SFTP не используется.")
+
+    ftps_ok, ftps_message = asyncio.run(_validate_ftps(settings))
+    if settings.use_ftps:
+        _set_ftps_status(True, ftps_ok, ftps_message)
+        if not ftps_ok:
+            return _render(form, ftps_message)
+    else:
+        _set_ftps_status(False, True, "FTPS не используется.")
+
+    if not settings.use_sftp and not settings.use_ftps:
+        return _render(form, "Для upload включите SFTP или FTPS.")
+
+    started, start_message = _start_worker(
+        settings,
+        allowed_message_ids=None,
+        live_mode=False,
+        source="manual-upload",
+        upload_only=True,
+    )
+    if started:
+        return _render(form, f"{sftp_status['message']} {ftps_status['message']} {start_message}")
     return _render(form, start_message)
 
 

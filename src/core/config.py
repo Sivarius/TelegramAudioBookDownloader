@@ -147,6 +147,13 @@ def load_settings(db: AppDatabase) -> Settings:
     ftps_security_mode = (_env_or_db("FTPS_SECURITY_MODE", db) or "explicit").strip().lower()
     if ftps_security_mode not in {"explicit", "implicit"}:
         ftps_security_mode = "explicit"
+    ftps_upload_concurrency_raw = _env_or_db("FTPS_UPLOAD_CONCURRENCY", db) or "2"
+    try:
+        ftps_upload_concurrency = int(ftps_upload_concurrency_raw)
+    except ValueError as exc:
+        raise ValueError("FTPS_UPLOAD_CONCURRENCY must be an integer") from exc
+    if ftps_upload_concurrency < 1:
+        ftps_upload_concurrency = 1
     cleanup_local_after_ftps = _to_bool(
         _env_or_db("CLEANUP_LOCAL_AFTER_FTPS", db) or "0"
     )
@@ -188,5 +195,6 @@ def load_settings(db: AppDatabase) -> Settings:
         ftps_verify_tls=ftps_verify_tls,
         ftps_passive_mode=ftps_passive_mode,
         ftps_security_mode=ftps_security_mode,
+        ftps_upload_concurrency=ftps_upload_concurrency,
         cleanup_local_after_ftps=cleanup_local_after_ftps,
     )
