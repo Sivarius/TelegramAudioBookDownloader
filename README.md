@@ -190,6 +190,7 @@ docker compose -f docker-compose.prod.yml down
 - `FTPS_USERNAME` - логин
 - `FTPS_PASSWORD` - пароль
 - `FTPS_REMOTE_DIR` - базовый удаленный каталог для книг
+- `FTPS_VERIFY_TLS` - проверять TLS-сертификат сервера (`1`/`0`, по умолчанию `1`)
 - `CLEANUP_LOCAL_AFTER_FTPS` - `1` или `0`, удалять локальный файл после подтверждённой FTPS загрузки
 - `AUTO_CHECK_INTERVAL_SECONDS` - интервал проверки каналов для автозадач (по умолчанию `7200`)
 

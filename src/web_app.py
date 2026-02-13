@@ -230,6 +230,7 @@ def _load_saved_form() -> dict:
             "ftps_username": db.get_setting("FTPS_USERNAME") or "",
             "ftps_password": db.get_setting("FTPS_PASSWORD") or "",
             "ftps_remote_dir": db.get_setting("FTPS_REMOTE_DIR") or "/uploads",
+            "ftps_verify_tls": (db.get_setting("FTPS_VERIFY_TLS") or "1") == "1",
             "cleanup_local_after_ftps": (db.get_setting("CLEANUP_LOCAL_AFTER_FTPS") or "0") == "1",
             "download_new": False,
             "remember_me": (db.get_setting("REMEMBER_ME") or "1") != "0",
@@ -269,6 +270,7 @@ def _form_from_request() -> dict:
         "ftps_username": request.form.get("ftps_username", saved["ftps_username"]).strip(),
         "ftps_password": request.form.get("ftps_password", saved["ftps_password"]).strip(),
         "ftps_remote_dir": request.form.get("ftps_remote_dir", saved["ftps_remote_dir"]).strip(),
+        "ftps_verify_tls": request.form.get("ftps_verify_tls") == "on",
         "cleanup_local_after_ftps": request.form.get("cleanup_local_after_ftps") == "on",
         "download_new": request.form.get("download_new") == "on",
         "remember_me": request.form.get("remember_me") == "on",
@@ -335,6 +337,7 @@ def _build_settings(form: dict, require_channel: bool = True) -> Settings:
         ftps_username=form["ftps_username"],
         ftps_password=form["ftps_password"],
         ftps_remote_dir=form["ftps_remote_dir"] or "/uploads",
+        ftps_verify_tls=bool(form["ftps_verify_tls"]),
         cleanup_local_after_ftps=bool(form["cleanup_local_after_ftps"]),
     )
 

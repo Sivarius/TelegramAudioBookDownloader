@@ -635,6 +635,12 @@
                 </div>
                 <div class="full">
                   <div class="check-row">
+                    <input id="ftps_verify_tls" type="checkbox" name="ftps_verify_tls" {% if form.ftps_verify_tls %}checked{% endif %}>
+                    <label for="ftps_verify_tls">Проверять TLS-сертификат FTPS сервера</label>
+                  </div>
+                </div>
+                <div class="full">
+                  <div class="check-row">
                     <input id="cleanup_local_after_ftps" type="checkbox" name="cleanup_local_after_ftps" {% if form.cleanup_local_after_ftps %}checked{% endif %}>
                     <label for="cleanup_local_after_ftps">Удалять локальный файл после подтверждённой загрузки на FTPS</label>
                   </div>

@@ -27,4 +27,5 @@ class Settings:
     ftps_username: str
     ftps_password: str
     ftps_remote_dir: str
+    ftps_verify_tls: bool
     cleanup_local_after_ftps: bool

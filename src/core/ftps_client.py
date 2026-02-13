@@ -38,7 +38,10 @@ class FTPSSync:
         if self.settings.ftps_port <= 0 or self.settings.ftps_port > 65535:
             raise ValueError("FTPS_PORT должен быть в диапазоне 1..65535.")
 
-        context = ssl.create_default_context()
+        if self.settings.ftps_verify_tls:
+            context = ssl.create_default_context()
+        else:
+            context = ssl._create_unverified_context()
         ftps = FTP_TLS(context=context, timeout=12)
         ftps.connect(host=self.settings.ftps_host, port=self.settings.ftps_port)
         ftps.login(user=self.settings.ftps_username, passwd=self.settings.ftps_password or "")
@@ -65,7 +68,15 @@ class FTPSSync:
             self.connect()
             base_remote = (self.settings.ftps_remote_dir or "/").strip() or "/"
             self.ensure_remote_dir(base_remote)
-            return True, f"FTPS: подключение установлено. Каталог доступен: {base_remote}"
+            tls_mode = "verify=on" if self.settings.ftps_verify_tls else "verify=off"
+            return True, f"FTPS: подключение установлено ({tls_mode}). Каталог доступен: {base_remote}"
+        except ssl.SSLCertVerificationError as exc:
+            return (
+                False,
+                "FTPS: ошибка TLS-сертификата. "
+                "Проверьте цепочку сертификатов на сервере или отключите проверку TLS в настройках FTPS. "
+                f"({exc})",
+            )
         except Exception as exc:
             return False, f"FTPS: ошибка подключения ({exc})"
         finally:
