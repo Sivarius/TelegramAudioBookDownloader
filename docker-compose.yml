@@ -1,6 +1,7 @@
 services:
   telegaparser:
     build: .
+    image: amatsukine/telegram-audiobook-downloader:latest
     container_name: telegaparser
     restart: unless-stopped
     env_file:
@@ -9,7 +10,10 @@ services:
       APP_HOST: 0.0.0.0
       APP_PORT: 8080
       OPEN_BROWSER: 0
+      DB_PATH: /app/data/bot_data.sqlite3
+      SESSION_NAME: /app/data/user_session
     ports:
       - "8080:8080"
     volumes:
-      - ./:/app
+      - ./downloads:/app/downloads
+      - ./data:/app/data
