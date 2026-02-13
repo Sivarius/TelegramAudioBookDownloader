@@ -1337,6 +1337,25 @@ def stop_server():
     return "Сервер остановлен (fallback)."
 
 
+@app.post("/stop_download")
+def stop_download():
+    global worker_thread
+    form = _form_from_request()
+    if not (worker_thread and worker_thread.is_alive()):
+        _set_status(running=False, message="Активная загрузка не выполняется.")
+        return _render(form, "Активная загрузка не выполняется.")
+
+    worker_stop_event.set()
+    _set_status(message="Запрошена остановка текущей загрузки...")
+    worker_thread.join(timeout=15)
+
+    if worker_thread and worker_thread.is_alive():
+        return _render(form, "Остановка запрошена, ожидается завершение текущих задач.")
+
+    _set_status(running=False, message="Текущая загрузка остановлена.")
+    return _render(form, "Текущая загрузка остановлена.")
+
+
 if __name__ == "__main__":
     _start_monitor_thread()
     if OPEN_BROWSER:
