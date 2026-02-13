@@ -3,6 +3,7 @@ from collections import deque
 import json
 import logging
 import os
+import sqlite3
 import threading
 import time
 import webbrowser
@@ -411,6 +412,35 @@ def _is_check_due(last_checked_at: str) -> bool:
     return (datetime.now() - last_time).total_seconds() >= AUTO_CHECK_INTERVAL_SECONDS
 
 
+def _saved_channels_fallback(saved_channels: list[dict], message: str) -> tuple[bool, str, list[dict]]:
+    items: list[dict] = []
+    for saved in saved_channels:
+        channel_ref = (saved.get("channel_ref") or "").strip() or str(saved.get("channel_id", 0))
+        channel_title = saved.get("channel_title") or channel_ref
+        has_new_audio = bool(saved.get("has_new_audio"))
+        status = "Есть новые аудио" if has_new_audio else "Нет новых аудио"
+        items.append(
+            {
+                "channel_id": int(saved.get("channel_id") or 0),
+                "channel_ref": channel_ref,
+                "channel_title": channel_title,
+                "check_new": bool(saved.get("check_new")),
+                "auto_download": bool(saved.get("auto_download")),
+                "auto_sftp": bool(saved.get("auto_sftp")),
+                "cleanup_local": bool(saved.get("cleanup_local")),
+                "last_checked_at": saved.get("last_checked_at") or "",
+                "latest_audio_id": int(saved.get("latest_audio_id") or 0),
+                "last_message_id": 0,
+                "last_file_path": "",
+                "has_new_audio": has_new_audio,
+                "status": status,
+                "last_error": saved.get("last_error") or "",
+                "updated_at": saved.get("updated_at") or "",
+            }
+        )
+    return True, message, items
+
+
 async def _collect_saved_channels_status(
     settings: Settings, only_due: bool = False
 ) -> tuple[bool, str, list[dict]]:
@@ -431,8 +461,22 @@ async def _collect_saved_channels_status(
     if not saved_channels:
         return True, "Сохраненные каналы отсутствуют.", []
 
+    if worker_thread and worker_thread.is_alive():
+        return _saved_channels_fallback(
+            saved_channels,
+            "Проверка каналов отложена: идёт активное скачивание.",
+        )
+
     client = create_telegram_client(settings)
-    await client.connect()
+    try:
+        await client.connect()
+    except sqlite3.OperationalError as exc:
+        if "database is locked" in str(exc).lower():
+            return _saved_channels_fallback(
+                saved_channels,
+                "Проверка каналов временно недоступна: Telethon session занята активной загрузкой.",
+            )
+        raise
     try:
         if not await client.is_user_authorized():
             items = []
@@ -557,6 +601,8 @@ def _start_monitor_thread() -> None:
 
 def _run_periodic_checks_once() -> None:
     try:
+        if worker_thread and worker_thread.is_alive():
+            return
         form = _load_saved_form()
         settings = _build_settings(form, require_channel=False)
         ok, _, channels = asyncio.run(_collect_saved_channels_status(settings, only_due=True))
