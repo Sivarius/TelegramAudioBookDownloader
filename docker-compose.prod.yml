@@ -1,7 +1,7 @@
 services:
   telegaparser:
     build: .
-    image: sivarius/telegram-audiobook-downloader:latest
+    image: amatsukine/telegram-audiobook-downloader:latest
     container_name: telegaparser
     restart: unless-stopped
     env_file:

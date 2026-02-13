@@ -43,11 +43,12 @@ install_dependencies.bat
 
 ## Docker Compose
 1. Заполнить `.env` (если файла нет, скопировать из `.env.example`).
-2. Для dev-режима (монтируется весь проект):
+2. Прод-образ в Docker Hub: `amatsukine/telegram-audiobook-downloader:latest`.
+3. Для dev-режима (монтируется весь проект):
    ```bash
    docker compose up -d --build
    ```
-3. Для prod-режима (только данные, без монтирования исходников):
+4. Для prod-режима (только данные, без монтирования исходников):
    ```bash
    # один раз перед запуском:
    type nul > bot_data.sqlite3
@@ -55,7 +56,7 @@ install_dependencies.bat
 
    docker compose -f docker-compose.prod.yml up -d --build
    ```
-4. Открыть:
+5. Открыть:
    - `http://127.0.0.1:8080`
 
 Остановка:
