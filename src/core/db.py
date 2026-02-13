@@ -42,6 +42,24 @@ class AppDatabase:
             )
             """
         )
+        self._conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS channel_preferences (
+                channel_ref TEXT PRIMARY KEY,
+                channel_id INTEGER,
+                channel_title TEXT,
+                check_new INTEGER NOT NULL DEFAULT 0,
+                auto_download INTEGER NOT NULL DEFAULT 0,
+                auto_sftp INTEGER NOT NULL DEFAULT 0,
+                cleanup_local INTEGER NOT NULL DEFAULT 0,
+                last_checked_at TEXT,
+                has_new_audio INTEGER NOT NULL DEFAULT 0,
+                latest_audio_id INTEGER NOT NULL DEFAULT 0,
+                last_error TEXT,
+                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            )
+            """
+        )
         self._conn.commit()
 
     def get_setting(self, key: str) -> Optional[str]:
@@ -79,6 +97,10 @@ class AppDatabase:
         self.set_setting("SFTP_USERNAME", settings.sftp_username)
         self.set_setting("SFTP_PASSWORD", settings.sftp_password)
         self.set_setting("SFTP_REMOTE_DIR", settings.sftp_remote_dir)
+        self.set_setting(
+            "CLEANUP_LOCAL_AFTER_SFTP",
+            "1" if settings.cleanup_local_after_sftp else "0",
+        )
 
     def already_downloaded(self, channel_id: int, message_id: int) -> bool:
         cur = self._conn.execute(
@@ -151,6 +173,7 @@ class AppDatabase:
                 last_file_path,
             ),
         )
+        self.ensure_channel_preferences(channel_id, channel_ref, channel_title)
         self._conn.commit()
 
     def close(self) -> None:
@@ -177,3 +200,141 @@ class AppDatabase:
                 }
             )
         return result
+
+    def ensure_channel_preferences(
+        self, channel_id: int, channel_ref: str, channel_title: str
+    ) -> None:
+        ref = (channel_ref or "").strip()
+        if not ref:
+            return
+        self._conn.execute(
+            """
+            INSERT INTO channel_preferences(
+                channel_ref, channel_id, channel_title, updated_at
+            )
+            VALUES (?, ?, ?, CURRENT_TIMESTAMP)
+            ON CONFLICT(channel_ref) DO UPDATE SET
+                channel_id = excluded.channel_id,
+                channel_title = CASE
+                    WHEN excluded.channel_title <> '' THEN excluded.channel_title
+                    ELSE channel_preferences.channel_title
+                END,
+                updated_at = CURRENT_TIMESTAMP
+            """,
+            (ref, int(channel_id), channel_title or ""),
+        )
+        self._conn.commit()
+
+    def list_channel_preferences(self) -> list[dict]:
+        cur = self._conn.execute(
+            """
+            SELECT
+                channel_ref, channel_id, channel_title,
+                check_new, auto_download, auto_sftp, cleanup_local,
+                last_checked_at, has_new_audio, latest_audio_id, last_error, updated_at
+            FROM channel_preferences
+            ORDER BY updated_at DESC
+            """
+        )
+        rows = cur.fetchall()
+        items: list[dict] = []
+        for row in rows:
+            items.append(
+                {
+                    "channel_ref": row[0] or "",
+                    "channel_id": int(row[1] or 0),
+                    "channel_title": row[2] or "",
+                    "check_new": bool(int(row[3] or 0)),
+                    "auto_download": bool(int(row[4] or 0)),
+                    "auto_sftp": bool(int(row[5] or 0)),
+                    "cleanup_local": bool(int(row[6] or 0)),
+                    "last_checked_at": row[7] or "",
+                    "has_new_audio": bool(int(row[8] or 0)),
+                    "latest_audio_id": int(row[9] or 0),
+                    "last_error": row[10] or "",
+                    "updated_at": row[11] or "",
+                }
+            )
+        return items
+
+    def upsert_channel_preferences(
+        self,
+        channel_ref: str,
+        channel_id: int,
+        channel_title: str,
+        check_new: bool,
+        auto_download: bool,
+        auto_sftp: bool,
+        cleanup_local: bool,
+    ) -> None:
+        ref = (channel_ref or "").strip()
+        if not ref:
+            return
+        self._conn.execute(
+            """
+            INSERT INTO channel_preferences(
+                channel_ref, channel_id, channel_title,
+                check_new, auto_download, auto_sftp, cleanup_local, updated_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+            ON CONFLICT(channel_ref) DO UPDATE SET
+                channel_id = excluded.channel_id,
+                channel_title = CASE
+                    WHEN excluded.channel_title <> '' THEN excluded.channel_title
+                    ELSE channel_preferences.channel_title
+                END,
+                check_new = excluded.check_new,
+                auto_download = excluded.auto_download,
+                auto_sftp = excluded.auto_sftp,
+                cleanup_local = excluded.cleanup_local,
+                updated_at = CURRENT_TIMESTAMP
+            """,
+            (
+                ref,
+                int(channel_id),
+                channel_title or "",
+                1 if check_new else 0,
+                1 if auto_download else 0,
+                1 if auto_sftp else 0,
+                1 if cleanup_local else 0,
+            ),
+        )
+        self._conn.commit()
+
+    def update_channel_check_status(
+        self,
+        channel_ref: str,
+        has_new_audio: bool,
+        latest_audio_id: int,
+        last_error: str = "",
+    ) -> None:
+        ref = (channel_ref or "").strip()
+        if not ref:
+            return
+        self._conn.execute(
+            """
+            UPDATE channel_preferences
+            SET
+                has_new_audio = ?,
+                latest_audio_id = ?,
+                last_error = ?,
+                last_checked_at = CURRENT_TIMESTAMP,
+                updated_at = CURRENT_TIMESTAMP
+            WHERE channel_ref = ?
+            """,
+            (1 if has_new_audio else 0, int(latest_audio_id), last_error or "", ref),
+        )
+        self._conn.commit()
+
+    def get_last_message_id_by_channel_ref(self, channel_ref: str) -> int:
+        ref = (channel_ref or "").strip()
+        if not ref:
+            return 0
+        cur = self._conn.execute(
+            "SELECT last_message_id FROM channel_state WHERE channel_ref = ?",
+            (ref,),
+        )
+        row = cur.fetchone()
+        if row and row[0]:
+            return int(row[0])
+        return 0

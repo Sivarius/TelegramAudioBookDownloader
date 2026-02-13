@@ -404,6 +404,13 @@
                 </div>
                 <input name="sftp_remote_dir" value="{{ form.sftp_remote_dir }}" placeholder="/uploads/books">
               </div>
+              <div class="full">
+                <div class="check-row">
+                  <input id="cleanup_local_after_sftp" type="checkbox" name="cleanup_local_after_sftp" {% if form.cleanup_local_after_sftp %}checked{% endif %}>
+                  <label for="cleanup_local_after_sftp">Удалять локальный файл после подтверждённой загрузки на SFTP</label>
+                  <span class="help" tabindex="0" data-tip="Удаление происходит только после проверки размера и SHA-256 хэша удалённого файла.">?</span>
+                </div>
+              </div>
             </div>
           </div>
           <div class="full">
@@ -682,22 +689,56 @@
           const row = document.createElement('div');
           row.className = 'channel-item';
           const left = document.createElement('div');
-          left.innerHTML = `<div><strong>${item.channel_title || item.channel_ref}</strong></div><div class="mono">${item.channel_ref}</div><div class="sub">${item.status || ''}</div>`;
+          left.innerHTML = `<div><strong>${item.channel_title || item.channel_ref}</strong></div><div class="mono">${item.channel_ref}</div><div class="sub">${item.status || ''}</div><div class="sub">Последняя проверка: ${item.last_checked_at || 'никогда'}</div>`;
           const rightWrap = document.createElement('div');
           const badge = document.createElement('span');
-          badge.className = `badge ${item.has_new ? 'ok' : 'warn'}`;
-          badge.textContent = item.has_new ? 'Новые есть' : 'Новых нет';
+          badge.className = `badge ${item.has_new_audio ? 'ok' : 'warn'}`;
+          badge.textContent = item.has_new_audio ? 'Новые есть' : 'Новых нет';
           const btn = document.createElement('button');
           btn.type = 'button';
           btn.className = 'btn secondary';
           btn.textContent = 'Выбрать';
           btn.addEventListener('click', () => {
             document.getElementById('channel_id').value = item.channel_ref || '';
+            document.getElementById('cleanup_local_after_sftp').checked = !!item.cleanup_local;
+          });
+          const prefWrap = document.createElement('div');
+          prefWrap.style.marginTop = '6px';
+          prefWrap.innerHTML = `
+            <label class="check-row"><input type="checkbox" data-pref="check_new">Проверять новые главы</label>
+            <label class="check-row"><input type="checkbox" data-pref="auto_download">Включить автозагрузку</label>
+            <label class="check-row"><input type="checkbox" data-pref="auto_sftp">Включить автозагрузку на SFTP</label>
+            <label class="check-row"><input type="checkbox" data-pref="cleanup_local">Очистка локального после SFTP</label>
+          `;
+          prefWrap.querySelector('input[data-pref="check_new"]').checked = !!item.check_new;
+          prefWrap.querySelector('input[data-pref="auto_download"]').checked = !!item.auto_download;
+          prefWrap.querySelector('input[data-pref="auto_sftp"]').checked = !!item.auto_sftp;
+          prefWrap.querySelector('input[data-pref="cleanup_local"]').checked = !!item.cleanup_local;
+
+          const saveBtn = document.createElement('button');
+          saveBtn.type = 'button';
+          saveBtn.className = 'btn secondary';
+          saveBtn.textContent = 'Сохранить';
+          saveBtn.addEventListener('click', async () => {
+            const data = new FormData(document.querySelector('form'));
+            data.set('channel_ref', item.channel_ref || '');
+            data.set('channel_id', String(item.channel_id || 0));
+            data.set('channel_title', item.channel_title || '');
+            data.set('check_new', prefWrap.querySelector('input[data-pref="check_new"]').checked ? '1' : '0');
+            data.set('auto_download', prefWrap.querySelector('input[data-pref="auto_download"]').checked ? '1' : '0');
+            data.set('auto_sftp', prefWrap.querySelector('input[data-pref="auto_sftp"]').checked ? '1' : '0');
+            data.set('cleanup_local', prefWrap.querySelector('input[data-pref="cleanup_local"]').checked ? '1' : '0');
+            const response = await fetch('/channels_preferences_update', { method: 'POST', body: data });
+            const result = await response.json();
+            status.textContent = result.message || '';
           });
           rightWrap.appendChild(badge);
           rightWrap.appendChild(document.createElement('br'));
           rightWrap.appendChild(btn);
+          rightWrap.appendChild(document.createElement('br'));
+          rightWrap.appendChild(saveBtn);
           row.appendChild(left);
+          row.appendChild(prefWrap);
           row.appendChild(rightWrap);
           list.appendChild(row);
         });

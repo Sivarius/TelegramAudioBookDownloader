@@ -22,6 +22,7 @@ async def download_if_needed(
     channel_ref: str = "",
     channel_title: str = "",
     sftp_sync: Optional[SFTPSync] = None,
+    cleanup_local_after_sftp: bool = False,
 ) -> None:
     channel_id = message.chat_id
     if channel_id is None:
@@ -73,6 +74,18 @@ async def download_if_needed(
                             "sftp_info": sftp_info,
                         }
                     )
+                if cleanup_local_after_sftp and "verified=True" in sftp_info:
+                    local_path = Path(str(file_path))
+                    if local_path.exists():
+                        local_path.unlink()
+                        if status_hook:
+                            status_hook(
+                                {
+                                    "event": "local_cleaned",
+                                    "message_id": message.id,
+                                    "file_path": str(file_path),
+                                }
+                            )
             except Exception as sftp_exc:
                 logging.exception("SFTP upload failed for message_id=%s", message.id)
                 if status_hook:
@@ -108,6 +121,7 @@ async def initial_backfill(
     stop_requested: Optional[Callable[[], bool]] = None,
     concurrency: int = 1,
     sftp_sync: Optional[SFTPSync] = None,
+    cleanup_local_after_sftp: bool = False,
 ) -> None:
     if limit == 0:
         return
@@ -136,6 +150,7 @@ async def initial_backfill(
                         channel_ref=channel_ref,
                         channel_title=channel_title,
                         sftp_sync=sftp_sync,
+                        cleanup_local_after_sftp=cleanup_local_after_sftp,
                     )
                     return
                 except FloodWaitError as flood:
@@ -195,6 +210,7 @@ async def run_downloader(
     allowed_message_ids: Optional[set[int]] = None,
     status_hook: Optional[Callable[[dict], None]] = None,
     stop_requested: Optional[Callable[[], bool]] = None,
+    live_mode: bool = True,
 ) -> None:
     db = AppDatabase(db_path)
     sftp_sync = SFTPSync(settings)
@@ -256,7 +272,12 @@ async def run_downloader(
             stop_requested=stop_requested,
             concurrency=settings.download_concurrency,
             sftp_sync=sftp_sync,
+            cleanup_local_after_sftp=settings.cleanup_local_after_sftp,
         )
+
+        if not live_mode:
+            logging.info("One-shot mode complete. Live listener disabled.")
+            return
 
         live_concurrency = max(1, settings.download_concurrency)
         download_semaphore = asyncio.Semaphore(live_concurrency)
@@ -275,6 +296,7 @@ async def run_downloader(
                             channel_ref=settings.channel,
                             channel_title=channel_title,
                             sftp_sync=sftp_sync,
+                            cleanup_local_after_sftp=settings.cleanup_local_after_sftp,
                         )
                         return
                     except FloodWaitError as flood:

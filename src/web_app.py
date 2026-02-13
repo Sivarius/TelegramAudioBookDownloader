@@ -6,6 +6,7 @@ import threading
 import time
 import webbrowser
 from datetime import datetime
+from dataclasses import replace
 from pathlib import Path
 from typing import Optional
 
@@ -26,6 +27,7 @@ HOST = os.getenv("APP_HOST", "127.0.0.1")
 PORT = int(os.getenv("APP_PORT", "8080"))
 OPEN_BROWSER = os.getenv("OPEN_BROWSER", "1").strip().lower() in {"1", "true", "yes", "on"}
 PREVIEW_LIMIT = 300
+AUTO_CHECK_INTERVAL_SECONDS = int(os.getenv("AUTO_CHECK_INTERVAL_SECONDS", "7200"))
 
 app = Flask(__name__)
 setup_logging()
@@ -60,6 +62,8 @@ _setup_debug_log_handler()
 worker_lock = threading.Lock()
 worker_thread: Optional[threading.Thread] = None
 worker_stop_event = threading.Event()
+monitor_thread: Optional[threading.Thread] = None
+monitor_stop_event = threading.Event()
 runtime_session_name = ""
 runtime_remember_me = True
 worker_status = {
@@ -153,6 +157,7 @@ def _load_saved_form() -> dict:
             "sftp_username": db.get_setting("SFTP_USERNAME") or "",
             "sftp_password": db.get_setting("SFTP_PASSWORD") or "",
             "sftp_remote_dir": db.get_setting("SFTP_REMOTE_DIR") or "/uploads",
+            "cleanup_local_after_sftp": (db.get_setting("CLEANUP_LOCAL_AFTER_SFTP") or "0") == "1",
             "remember_me": (db.get_setting("REMEMBER_ME") or "1") != "0",
         }
     finally:
@@ -182,6 +187,7 @@ def _form_from_request() -> dict:
         "sftp_username": request.form.get("sftp_username", saved["sftp_username"]).strip(),
         "sftp_password": request.form.get("sftp_password", saved["sftp_password"]).strip(),
         "sftp_remote_dir": request.form.get("sftp_remote_dir", saved["sftp_remote_dir"]).strip(),
+        "cleanup_local_after_sftp": request.form.get("cleanup_local_after_sftp") == "on",
         "remember_me": request.form.get("remember_me") == "on",
     }
 
@@ -230,6 +236,7 @@ def _build_settings(form: dict, require_channel: bool = True) -> Settings:
         sftp_username=form["sftp_username"],
         sftp_password=form["sftp_password"],
         sftp_remote_dir=form["sftp_remote_dir"] or "/uploads",
+        cleanup_local_after_sftp=bool(form["cleanup_local_after_sftp"]),
     )
 
 
@@ -326,10 +333,55 @@ async def _latest_audio_message_id(client, channel, scan_limit: int = 200) -> in
     return 0
 
 
-async def _collect_saved_channels_status(settings: Settings) -> tuple[bool, str, list[dict]]:
+def _upsert_current_channel_preference(settings: Settings) -> None:
+    channel_ref = (settings.channel or "").strip()
+    if not channel_ref or channel_ref == "_":
+        return
     db = AppDatabase(DB_PATH)
     try:
-        saved_channels = db.list_channel_states()
+        db.upsert_channel_preferences(
+            channel_ref=channel_ref,
+            channel_id=0,
+            channel_title=channel_ref,
+            check_new=False,
+            auto_download=False,
+            auto_sftp=False,
+            cleanup_local=bool(settings.cleanup_local_after_sftp),
+        )
+    finally:
+        db.close()
+
+
+def _parse_db_time(value: str) -> Optional[datetime]:
+    if not value:
+        return None
+    try:
+        return datetime.strptime(value, "%Y-%m-%d %H:%M:%S")
+    except ValueError:
+        return None
+
+
+def _is_check_due(last_checked_at: str) -> bool:
+    last_time = _parse_db_time(last_checked_at)
+    if not last_time:
+        return True
+    return (datetime.now() - last_time).total_seconds() >= AUTO_CHECK_INTERVAL_SECONDS
+
+
+async def _collect_saved_channels_status(
+    settings: Settings, only_due: bool = False
+) -> tuple[bool, str, list[dict]]:
+    db = AppDatabase(DB_PATH)
+    try:
+        saved_channels = db.list_channel_preferences()
+        if not saved_channels:
+            for state in db.list_channel_states():
+                db.ensure_channel_preferences(
+                    int(state.get("channel_id") or 0),
+                    state.get("channel_ref") or str(state.get("channel_id") or ""),
+                    state.get("channel_title") or "",
+                )
+            saved_channels = db.list_channel_preferences()
     finally:
         db.close()
 
@@ -345,40 +397,83 @@ async def _collect_saved_channels_status(settings: Settings) -> tuple[bool, str,
                 items.append(
                     {
                         **item,
-                        "channel_ref": item["channel_ref"] or str(item["channel_id"]),
+                        "channel_ref": item["channel_ref"] or str(item.get("channel_id", 0)),
                         "status": "Требуется авторизация",
-                        "has_new": False,
+                        "has_new_audio": False,
                     }
                 )
             return False, "Сессия не авторизована. Сначала нажмите Авторизоваться.", items
 
         items: list[dict] = []
         for saved in saved_channels:
-            channel_ref = (saved.get("channel_ref") or "").strip() or str(saved["channel_id"])
+            channel_ref = (saved.get("channel_ref") or "").strip() or str(saved.get("channel_id", 0))
+            if only_due and not _is_check_due(saved.get("last_checked_at", "")):
+                continue
             channel_title = saved.get("channel_title") or channel_ref
-            has_new = False
+            has_new_audio = bool(saved.get("has_new_audio", False))
             status = "Нет новых аудио"
-            latest_audio_id = 0
+            latest_audio_id = int(saved.get("latest_audio_id") or 0)
+            error_text = ""
             try:
                 entity = await resolve_channel_entity(client, channel_ref)
                 marked_channel_id = utils.get_peer_id(entity)
                 latest_audio_id = await _latest_audio_message_id(client, entity)
-                last_message_id = int(saved.get("last_message_id") or 0)
-                has_new = latest_audio_id > last_message_id if latest_audio_id > 0 else False
-                status = "Есть новые аудио" if has_new else "Нет новых аудио"
+                db_inner = AppDatabase(DB_PATH)
+                try:
+                    last_message_id = db_inner.get_last_message_id_by_channel_ref(channel_ref)
+                finally:
+                    db_inner.close()
+                has_new_audio = latest_audio_id > last_message_id if latest_audio_id > 0 else False
+                status = "Есть новые аудио" if has_new_audio else "Нет новых аудио"
                 channel_title = getattr(entity, "title", channel_title)
-                channel_ref = str(marked_channel_id)
+                canonical_ref = str(marked_channel_id)
+                db_inner = AppDatabase(DB_PATH)
+                try:
+                    db_inner.upsert_channel_preferences(
+                        channel_ref=canonical_ref,
+                        channel_id=marked_channel_id,
+                        channel_title=channel_title,
+                        check_new=bool(saved.get("check_new")),
+                        auto_download=bool(saved.get("auto_download")),
+                        auto_sftp=bool(saved.get("auto_sftp")),
+                        cleanup_local=bool(saved.get("cleanup_local")),
+                    )
+                    db_inner.update_channel_check_status(
+                        channel_ref=canonical_ref,
+                        has_new_audio=has_new_audio,
+                        latest_audio_id=latest_audio_id,
+                        last_error="",
+                    )
+                finally:
+                    db_inner.close()
+                channel_ref = canonical_ref
             except Exception as exc:
                 status = f"Ошибка проверки: {exc}"
+                error_text = str(exc)
+                db_inner = AppDatabase(DB_PATH)
+                try:
+                    db_inner.update_channel_check_status(
+                        channel_ref=channel_ref,
+                        has_new_audio=False,
+                        latest_audio_id=0,
+                        last_error=error_text,
+                    )
+                finally:
+                    db_inner.close()
             items.append(
                 {
-                    "channel_id": saved["channel_id"],
+                    "channel_id": int(saved.get("channel_id") or 0),
                     "channel_ref": channel_ref,
                     "channel_title": channel_title,
-                    "last_message_id": int(saved.get("last_message_id") or 0),
+                    "check_new": bool(saved.get("check_new")),
+                    "auto_download": bool(saved.get("auto_download")),
+                    "auto_sftp": bool(saved.get("auto_sftp")),
+                    "cleanup_local": bool(saved.get("cleanup_local")),
+                    "last_checked_at": saved.get("last_checked_at") or "",
                     "latest_audio_id": latest_audio_id,
-                    "has_new": has_new,
+                    "has_new_audio": has_new_audio,
                     "status": status,
+                    "last_error": error_text or (saved.get("last_error") or ""),
                     "updated_at": saved.get("updated_at") or "",
                 }
             )
@@ -386,6 +481,61 @@ async def _collect_saved_channels_status(settings: Settings) -> tuple[bool, str,
         return True, f"Проверено каналов: {len(items)}", items
     finally:
         await client.disconnect()
+
+
+def _start_monitor_thread() -> None:
+    global monitor_thread
+    if monitor_thread and monitor_thread.is_alive():
+        return
+    monitor_stop_event.clear()
+
+    def _monitor_target() -> None:
+        while not monitor_stop_event.is_set():
+            try:
+                _run_periodic_checks_once()
+            except Exception:
+                logging.exception("Periodic monitor loop error")
+            for _ in range(60):
+                if monitor_stop_event.is_set():
+                    break
+                time.sleep(1)
+
+    monitor_thread = threading.Thread(target=_monitor_target, daemon=True)
+    monitor_thread.start()
+
+
+def _run_periodic_checks_once() -> None:
+    try:
+        form = _load_saved_form()
+        settings = _build_settings(form, require_channel=False)
+        ok, _, channels = asyncio.run(_collect_saved_channels_status(settings, only_due=True))
+        if not ok:
+            return
+        for item in channels:
+            if not item.get("check_new"):
+                continue
+            if not item.get("has_new_audio"):
+                continue
+            if not item.get("auto_download"):
+                continue
+            if worker_thread and worker_thread.is_alive():
+                logging.info("Auto-download skipped: worker is busy")
+                continue
+            channel_ref = str(item.get("channel_ref") or "").strip()
+            if not channel_ref:
+                continue
+            run_settings = replace(
+                settings,
+                channel=channel_ref,
+                use_sftp=bool(settings.use_sftp and item.get("auto_sftp")),
+                cleanup_local_after_sftp=bool(item.get("cleanup_local")),
+            )
+            started, msg = _start_worker(run_settings, None, live_mode=False, source="auto")
+            logging.info("Auto-download for %s: %s", channel_ref, msg)
+            if started:
+                break
+    except Exception:
+        logging.exception("Periodic check run failed")
 
 
 async def _authorize_user(settings: Settings, code: str, password: str) -> tuple[bool, str, bool, bool]:
@@ -502,7 +652,12 @@ def _pick_range_ids(items: list[dict], from_index_raw: str, to_index_raw: str) -
     return selected
 
 
-def _start_worker(settings: Settings, allowed_message_ids: Optional[set[int]]) -> tuple[bool, str]:
+def _start_worker(
+    settings: Settings,
+    allowed_message_ids: Optional[set[int]],
+    live_mode: bool = True,
+    source: str = "manual",
+) -> tuple[bool, str]:
     global worker_thread
 
     with worker_lock:
@@ -512,7 +667,7 @@ def _start_worker(settings: Settings, allowed_message_ids: Optional[set[int]]) -
         worker_stop_event.clear()
         _set_status(
             running=True,
-            message="Скачивание запущено.",
+            message=f"Скачивание запущено ({source}).",
             downloaded=0,
             failed=0,
             skipped=0,
@@ -571,6 +726,8 @@ def _start_worker(settings: Settings, allowed_message_ids: Optional[set[int]]) -
                     sftp_failed=int(worker_status.get("sftp_failed", 0)) + 1,
                     message=f"SFTP ошибка: message_id={message_id}",
                 )
+            elif event == "local_cleaned":
+                _set_status(message=f"Локальный файл удален после SFTP: message_id={message_id}")
 
         def _target() -> None:
             try:
@@ -581,6 +738,7 @@ def _start_worker(settings: Settings, allowed_message_ids: Optional[set[int]]) -
                         allowed_message_ids=allowed_message_ids,
                         status_hook=_status_hook,
                         stop_requested=lambda: worker_stop_event.is_set(),
+                        live_mode=live_mode,
                     )
                 )
             except Exception as exc:
@@ -592,7 +750,7 @@ def _start_worker(settings: Settings, allowed_message_ids: Optional[set[int]]) -
         worker_thread = threading.Thread(target=_target, daemon=True)
         worker_thread.start()
 
-    return True, "Загрузчик запущен."
+    return True, f"Загрузчик запущен ({source})."
 
 
 def _render(form: dict, message: str = "", need_code: bool = False, need_password: bool = False):
@@ -675,6 +833,7 @@ def authorize():
         _set_sftp_status(False, True, "SFTP не используется.")
 
     _store_settings(settings)
+    _upsert_current_channel_preference(settings)
 
     try:
         ok, auth_message, need_code, need_password = asyncio.run(
@@ -720,6 +879,7 @@ def refresh_preview():
     else:
         _set_sftp_status(False, True, "SFTP не используется.")
 
+    _upsert_current_channel_preference(settings)
     preview_ok, preview_message, items = asyncio.run(_fetch_preview(settings))
     global preview_cache
     preview_cache = items if preview_ok else []
@@ -758,6 +918,7 @@ def start_download():
         _set_sftp_status(False, True, "SFTP не используется.")
 
     _store_settings(settings)
+    _upsert_current_channel_preference(settings)
 
     channel_ok, channel_message = asyncio.run(_validate_channel(settings))
     if not channel_ok:
@@ -772,7 +933,7 @@ def start_download():
     if allowed_message_ids is not None and len(allowed_message_ids) == 0:
         return _render(form, "В выбранном диапазоне нет аудио.")
 
-    started, start_message = _start_worker(settings, allowed_message_ids)
+    started, start_message = _start_worker(settings, allowed_message_ids, live_mode=True, source="manual")
     if started:
         return _render(
             form,
@@ -809,15 +970,57 @@ def channels_status():
     return jsonify({"ok": ok, "message": message, "items": items})
 
 
+@app.post("/channels_preferences_update")
+def channels_preferences_update():
+    form = _form_from_request()
+    try:
+        settings = _build_settings(form, require_channel=False)
+    except ValueError as exc:
+        return jsonify({"ok": False, "message": str(exc)}), 400
+
+    channel_ref = request.form.get("channel_ref", "").strip()
+    channel_id = _safe_int(request.form.get("channel_id", "0"), 0)
+    channel_title = request.form.get("channel_title", "").strip()
+    check_new = request.form.get("check_new") == "1"
+    auto_download = request.form.get("auto_download") == "1"
+    auto_sftp = request.form.get("auto_sftp") == "1"
+    cleanup_local = request.form.get("cleanup_local") == "1"
+
+    if not channel_ref:
+        return jsonify({"ok": False, "message": "channel_ref is required"}), 400
+
+    db = AppDatabase(DB_PATH)
+    try:
+        db.upsert_channel_preferences(
+            channel_ref=channel_ref,
+            channel_id=channel_id,
+            channel_title=channel_title or channel_ref,
+            check_new=check_new,
+            auto_download=auto_download,
+            auto_sftp=auto_sftp,
+            cleanup_local=cleanup_local,
+        )
+    finally:
+        db.close()
+
+    # Update global default cleanup option for manual runs.
+    settings = replace(settings, cleanup_local_after_sftp=cleanup_local)
+    _store_settings(settings)
+    return jsonify({"ok": True, "message": "Настройки канала сохранены."})
+
+
 @app.post("/stop_server")
 def stop_server():
-    global worker_thread
+    global worker_thread, monitor_thread
 
     worker_stop_event.set()
+    monitor_stop_event.set()
     _set_status(message="Остановка сервера...", running=False)
 
     if worker_thread and worker_thread.is_alive():
         worker_thread.join(timeout=10)
+    if monitor_thread and monitor_thread.is_alive():
+        monitor_thread.join(timeout=5)
 
     if not runtime_remember_me:
         _delete_session_files(runtime_session_name)
@@ -838,6 +1041,7 @@ def stop_server():
 
 
 if __name__ == "__main__":
+    _start_monitor_thread()
     if OPEN_BROWSER:
         threading.Timer(1.0, lambda: webbrowser.open(f"http://{HOST}:{PORT}")).start()
     app.run(host=HOST, port=PORT, debug=False, use_reloader=False)

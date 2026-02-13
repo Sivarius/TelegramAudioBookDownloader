@@ -125,6 +125,9 @@ def load_settings(db: AppDatabase) -> Settings:
     sftp_username = _env_or_db("SFTP_USERNAME", db)
     sftp_password = _env_or_db("SFTP_PASSWORD", db)
     sftp_remote_dir = _env_or_db("SFTP_REMOTE_DIR", db) or "/uploads"
+    cleanup_local_after_sftp = _to_bool(
+        _env_or_db("CLEANUP_LOCAL_AFTER_SFTP", db) or "0"
+    )
     try:
         sftp_port = int(sftp_port_raw)
     except ValueError as exc:
@@ -150,4 +153,5 @@ def load_settings(db: AppDatabase) -> Settings:
         sftp_username=sftp_username,
         sftp_password=sftp_password,
         sftp_remote_dir=sftp_remote_dir,
+        cleanup_local_after_sftp=cleanup_local_after_sftp,
     )

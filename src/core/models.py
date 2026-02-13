@@ -20,3 +20,4 @@ class Settings:
     sftp_username: str
     sftp_password: str
     sftp_remote_dir: str
+    cleanup_local_after_sftp: bool

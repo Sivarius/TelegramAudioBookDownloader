@@ -1,6 +1,7 @@
 import os
 import posixpath
 import threading
+import hashlib
 from typing import Optional
 
 import paramiko
@@ -117,10 +118,56 @@ class SFTPSync:
             return False, "Пустое имя файла."
 
         with self._io_lock:
-            if file_name in self._remote_file_names:
-                return False, "Файл уже есть на SFTP."
-
             remote_path = posixpath.join(self._remote_channel_dir, file_name)
-            self._sftp.put(local_file_path, remote_path)
-            self._remote_file_names.add(file_name)
-            return True, remote_path
+            uploaded = False
+            if file_name in self._remote_file_names:
+                uploaded = False
+            else:
+                self._sftp.put(local_file_path, remote_path)
+                self._remote_file_names.add(file_name)
+                uploaded = True
+
+            size_match, hash_match = self.verify_remote_file(local_file_path, remote_path)
+            verified = size_match and hash_match
+            if uploaded:
+                reason = "uploaded"
+            else:
+                reason = "already_exists"
+            return (
+                uploaded,
+                f"{reason}; remote={remote_path}; size_match={size_match}; hash_match={hash_match}; verified={verified}",
+            )
+
+    def verify_remote_file(self, local_file_path: str, remote_file_path: str) -> tuple[bool, bool]:
+        if not self._sftp:
+            raise RuntimeError("SFTP не подключен.")
+        local_size = os.path.getsize(local_file_path)
+        remote_stat = self._sftp.stat(remote_file_path)
+        size_match = int(remote_stat.st_size) == int(local_size)
+        local_hash = self._sha256_local(local_file_path)
+        remote_hash = self._sha256_remote(remote_file_path)
+        hash_match = local_hash == remote_hash
+        return size_match, hash_match
+
+    @staticmethod
+    def _sha256_local(path: str) -> str:
+        digest = hashlib.sha256()
+        with open(path, "rb") as file_obj:
+            while True:
+                chunk = file_obj.read(1024 * 512)
+                if not chunk:
+                    break
+                digest.update(chunk)
+        return digest.hexdigest()
+
+    def _sha256_remote(self, remote_path: str) -> str:
+        if not self._sftp:
+            raise RuntimeError("SFTP не подключен.")
+        digest = hashlib.sha256()
+        with self._sftp.open(remote_path, "rb") as remote_file:
+            while True:
+                chunk = remote_file.read(1024 * 512)
+                if not chunk:
+                    break
+                digest.update(chunk)
+        return digest.hexdigest()
