@@ -354,6 +354,43 @@ async def run_remote_uploader(
                 except Exception as exc:
                     if stop_requested and stop_requested():
                         raise asyncio.CancelledError() from exc
+                    is_timeout = "timed out" in str(exc).lower()
+                    if is_timeout:
+                        try:
+                            await asyncio.to_thread(sync_client.close)
+                        except Exception:
+                            pass
+                        try:
+                            await asyncio.wait_for(asyncio.to_thread(sync_client.connect), timeout=30)
+                            await asyncio.wait_for(
+                                asyncio.to_thread(sync_client.prepare_channel_dir, channel_folder),
+                                timeout=30,
+                            )
+                            recovered, recovered_info = await asyncio.to_thread(
+                                sync_client.check_remote_file_status,
+                                str(file_path),
+                                (
+                                    cleanup_local_after_remote
+                                    and str(getattr(sync_client, "name", "")).upper() != "FTPS"
+                                ),
+                            )
+                            if recovered:
+                                uploaded = True
+                                info = f"uploaded_after_timeout; {recovered_info}"
+                                logging.warning(
+                                    "Recovered upload after timeout transfer_id=%s file=%s info=%s",
+                                    transfer_id,
+                                    file_path,
+                                    recovered_info,
+                                )
+                                break
+                        except Exception as recovery_exc:
+                            logging.warning(
+                                "Timeout recovery check failed transfer_id=%s file=%s error=%s",
+                                transfer_id,
+                                file_path,
+                                recovery_exc,
+                            )
                     last_exc = exc
                     logging.warning(
                         "Upload failed transfer_id=%s attempt=%s/%s file=%s error=%s",

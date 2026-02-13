@@ -202,6 +202,38 @@ class SFTPSync:
             hash_match = local_hash == remote_hash
         return size_match, hash_match
 
+    def check_remote_file_status(
+        self,
+        local_file_path: str,
+        verify_hash: bool = False,
+    ) -> tuple[bool, str]:
+        if not self.enabled:
+            return False, "SFTP выключен."
+        if not self._sftp:
+            return False, "SFTP не подключен."
+        if not self._remote_channel_dir:
+            return False, "Не подготовлен удаленный каталог."
+        file_name = os.path.basename(local_file_path)
+        if not file_name:
+            return False, "Пустое имя файла."
+        remote_path = posixpath.join(self._remote_channel_dir, file_name)
+        try:
+            self._sftp.stat(remote_path)
+        except IOError:
+            return False, f"remote_missing; remote={remote_path}"
+        size_match, hash_match = self.verify_remote_file(
+            local_file_path,
+            remote_path,
+            verify_hash=verify_hash,
+        )
+        verified = size_match and hash_match
+        if verified:
+            self._remote_file_names.add(file_name)
+        return (
+            verified,
+            f"remote={remote_path}; size_match={size_match}; hash_match={hash_match}; verified={verified}",
+        )
+
     @staticmethod
     def _sha256_local(path: str) -> str:
         digest = hashlib.sha256()
