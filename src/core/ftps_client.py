@@ -421,8 +421,14 @@ class FTPSSync:
         hash_match = True
         if verify_hash:
             local_hash_value = local_hash.strip() if local_hash else self._sha256_local(local_file_path)
-            remote_hash = await self._sha256_remote_async(remote_file_path)
+            remote_hash, streamed_size = await self._sha256_remote_async(remote_file_path)
             hash_match = local_hash_value == remote_hash
+            # Some FTPS servers return incomplete/incorrect size in STAT/LIST fallback.
+            # When hash is verified from streamed remote content, prefer streamed size.
+            if int(remote_size) <= 0:
+                size_match = int(streamed_size) == int(local_size)
+            elif hash_match and int(streamed_size) == int(local_size):
+                size_match = True
         return size_match, hash_match
 
     def check_remote_file_status(
@@ -488,11 +494,13 @@ class FTPSSync:
                 digest.update(chunk)
         return digest.hexdigest()
 
-    async def _sha256_remote_async(self, remote_path: str) -> str:
+    async def _sha256_remote_async(self, remote_path: str) -> tuple[str, int]:
         if not self._client:
             raise RuntimeError("FTPS не подключен.")
         digest = hashlib.sha256()
+        streamed_size = 0
         async with self._client.download_stream(PurePosixPath(remote_path), offset=0) as stream:
             async for chunk in stream.iter_by_block(1024 * 512):
                 digest.update(chunk)
-        return digest.hexdigest()
+                streamed_size += len(chunk)
+        return digest.hexdigest(), int(streamed_size)
