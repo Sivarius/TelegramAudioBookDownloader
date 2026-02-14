@@ -4,7 +4,7 @@ import posixpath
 import socket
 import ssl
 import threading
-from ftplib import FTP_TLS, error_perm
+from ftplib import FTP, FTP_TLS, error_perm
 from typing import Callable, Optional
 
 from core.models import Settings
@@ -12,7 +12,33 @@ from core.models import Settings
 FTPS_TIMEOUT_SECONDS = 30
 
 
-class ImplicitFTP_TLS(FTP_TLS):
+class ReusedSslSocket(ssl.SSLSocket):
+    def unwrap(self):
+        # Some FTPS servers close data TLS channel without proper TLS close_notify.
+        # Avoid surfacing noisy unwrap errors in this case.
+        return None
+
+
+class ReusedSessionFTP_TLS(FTP_TLS):
+    """Explicit FTPS with shared TLS session for data channel."""
+
+    def ntransfercmd(self, cmd: str, rest=None):
+        conn, size = FTP.ntransfercmd(self, cmd, rest)
+        if self._prot_p:
+            session = getattr(self.sock, "session", None)
+            if session is not None:
+                conn = self.context.wrap_socket(
+                    conn,
+                    server_hostname=self.host,
+                    session=session,
+                )
+            else:
+                conn = self.context.wrap_socket(conn, server_hostname=self.host)
+            conn.__class__ = ReusedSslSocket
+        return conn, size
+
+
+class ImplicitFTP_TLS(ReusedSessionFTP_TLS):
     """Minimal implicit FTPS client (TLS starts on connect)."""
 
     def connect(self, host: str = "", port: int = 0) -> str:
@@ -93,7 +119,7 @@ class FTPSSync:
                 encoding=initial_encoding,
             )
         else:
-            ftps = FTP_TLS(
+            ftps = ReusedSessionFTP_TLS(
                 context=context,
                 timeout=FTPS_TIMEOUT_SECONDS,
                 encoding=initial_encoding,
@@ -173,11 +199,30 @@ class FTPSSync:
     def _keepalive(self) -> None:
         if not self._ftps:
             return
-        try:
-            self._ftps.voidcmd("NOOP")
-        except Exception:
-            # Keepalive is best-effort; next operation will surface real error if connection is broken.
-            pass
+        self._ftps.voidcmd("NOOP")
+
+    @staticmethod
+    def _is_recoverable_error(exc: Exception) -> bool:
+        if isinstance(exc, (ssl.SSLEOFError, BrokenPipeError, TimeoutError, socket.timeout)):
+            return True
+        if isinstance(exc, OSError):
+            if getattr(exc, "errno", None) in {32, 54, 104, 110}:
+                return True
+        if isinstance(exc, error_perm):
+            text = str(exc).lower()
+            if "425" in text or "426" in text:
+                return True
+        text = str(exc).lower()
+        return "timed out" in text or "broken pipe" in text or "eof occurred" in text
+
+    def _reconnect_current_channel_dir_locked(self) -> None:
+        channel_folder = ""
+        if self._remote_channel_dir:
+            channel_folder = posixpath.basename(self._remote_channel_dir.rstrip("/"))
+        self.close()
+        self.connect()
+        if channel_folder:
+            self.prepare_channel_dir(channel_folder)
 
     def ensure_remote_dir(self, remote_dir: str) -> str:
         if not self._ftps:
@@ -246,71 +291,88 @@ class FTPSSync:
             return False, "Пустое имя файла."
 
         with self._io_lock:
-            self._keepalive()
-            remote_path = posixpath.join(self._remote_channel_dir, file_name)
-            uploaded = False
-            reuploaded = False
-            remote_exists = False
-            if file_name in self._remote_file_names:
-                remote_exists = True
-            else:
+            attempts = 3
+            last_exc: Optional[Exception] = None
+            for attempt in range(1, attempts + 1):
                 try:
-                    remote_exists = self._remote_exists(remote_path)
-                except Exception:
+                    self._keepalive()
+                    remote_path = posixpath.join(self._remote_channel_dir, file_name)
+                    uploaded = False
+                    reuploaded = False
                     remote_exists = False
+                    if file_name in self._remote_file_names:
+                        remote_exists = True
+                    else:
+                        try:
+                            remote_exists = self._remote_exists(remote_path)
+                        except Exception:
+                            remote_exists = False
 
-            if remote_exists:
-                size_match, hash_match = self.verify_remote_file(
-                    local_file_path,
-                    remote_path,
-                    verify_hash=verify_hash,
-                )
-                verified = size_match and hash_match
-                if verified:
-                    self._remote_file_names.add(file_name)
+                    if remote_exists:
+                        size_match, hash_match = self.verify_remote_file(
+                            local_file_path,
+                            remote_path,
+                            verify_hash=verify_hash,
+                        )
+                        verified = size_match and hash_match
+                        if verified:
+                            self._remote_file_names.add(file_name)
+                            return (
+                                False,
+                                f"already_exists; remote={remote_path}; size_match={size_match}; hash_match={hash_match}; verified={verified}",
+                            )
+                        reuploaded = True
+
+                    if not remote_exists or reuploaded:
+                        total_size = os.path.getsize(local_file_path)
+                        sent_bytes = 0
+
+                        def _block_progress(chunk: bytes) -> None:
+                            nonlocal sent_bytes
+                            sent_bytes += len(chunk)
+                            if progress_callback:
+                                progress_callback(min(sent_bytes, total_size), total_size)
+
+                        with open(local_file_path, "rb") as file_obj:
+                            self._ftps.storbinary(
+                                f"STOR {remote_path}",
+                                file_obj,
+                                blocksize=1024 * 256,
+                                callback=_block_progress,
+                            )
+                        if progress_callback:
+                            progress_callback(total_size, total_size)
+                        self._remote_file_names.add(file_name)
+                        uploaded = True
+
+                    size_match, hash_match = self.verify_remote_file(
+                        local_file_path,
+                        remote_path,
+                        verify_hash=verify_hash,
+                    )
+                    verified = size_match and hash_match
+                    if not verified:
+                        raise RuntimeError(
+                            f"FTPS verify failed: remote={remote_path} size_match={size_match} hash_match={hash_match}"
+                        )
+                    reason = "reuploaded" if reuploaded else ("uploaded" if uploaded else "already_exists")
                     return (
-                        False,
-                        f"already_exists; remote={remote_path}; size_match={size_match}; hash_match={hash_match}; verified={verified}",
+                        uploaded,
+                        f"{reason}; remote={remote_path}; size_match={size_match}; hash_match={hash_match}; verified={verified}",
                     )
-                reuploaded = True
-
-            if not remote_exists or reuploaded:
-                total_size = os.path.getsize(local_file_path)
-                sent_bytes = 0
-
-                def _block_progress(chunk: bytes) -> None:
-                    nonlocal sent_bytes
-                    sent_bytes += len(chunk)
-                    if progress_callback:
-                        progress_callback(min(sent_bytes, total_size), total_size)
-
-                with open(local_file_path, "rb") as file_obj:
-                    self._ftps.storbinary(
-                        f"STOR {remote_path}",
-                        file_obj,
-                        blocksize=1024 * 256,
-                        callback=_block_progress,
-                    )
-                if progress_callback:
-                    progress_callback(total_size, total_size)
-                self._remote_file_names.add(file_name)
-                uploaded = True
-
-            size_match, hash_match = self.verify_remote_file(
-                local_file_path,
-                remote_path,
-                verify_hash=verify_hash,
-            )
-            verified = size_match and hash_match
-            if not verified:
-                raise RuntimeError(
-                    f"FTPS verify failed: remote={remote_path} size_match={size_match} hash_match={hash_match}"
-                )
-            reason = "reuploaded" if reuploaded else ("uploaded" if uploaded else "already_exists")
-            return (
-                uploaded,
-                f"{reason}; remote={remote_path}; size_match={size_match}; hash_match={hash_match}; verified={verified}",
-            )
+                except Exception as exc:
+                    last_exc = exc
+                    if attempt >= attempts or not self._is_recoverable_error(exc):
+                        raise
+                    try:
+                        self._reconnect_current_channel_dir_locked()
+                    except Exception as reconnect_exc:
+                        last_exc = reconnect_exc
+                        if attempt >= attempts:
+                            raise reconnect_exc
+            if last_exc:
+                raise last_exc
+            raise RuntimeError("FTPS upload failed for unknown reason.")
 
     def verify_remote_file(
         self,
