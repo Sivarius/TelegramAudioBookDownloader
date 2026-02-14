@@ -784,7 +784,32 @@ async def _fetch_ftps_preview(settings: Settings, limit: int = 300) -> tuple[boo
                         "path": item.get("path", ""),
                     }
                 )
-            return True, f"FTPS preview: channel dir empty/missing ({channel_remote}), showing base dir ({base_remote}).", rows
+            if not rows:
+                rows = [
+                    {
+                        "scope": "info",
+                        "name": "channel dir empty/missing",
+                        "type": "info",
+                        "size": "",
+                        "modify": "",
+                        "path": channel_remote,
+                    },
+                    {
+                        "scope": "info",
+                        "name": "base dir entries: 0",
+                        "type": "info",
+                        "size": "",
+                        "modify": "",
+                        "path": base_remote,
+                    },
+                ]
+            return (
+                True,
+                "FTPS preview: "
+                f"channel dir empty/missing ({channel_remote}), "
+                f"base dir ({base_remote}) entries={len(base_items)}.",
+                rows,
+            )
 
         return True, f"FTPS preview: {len(rows)} entries from {channel_remote}", rows
     except Exception as exc:
