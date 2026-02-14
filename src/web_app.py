@@ -3,6 +3,7 @@ from collections import deque
 import hashlib
 import logging
 import os
+import posixpath
 import sqlite3
 import threading
 import time
@@ -168,6 +169,8 @@ worker_status = {
     "mode": "idle",
 }
 preview_cache: list[dict] = []
+ftps_remote_preview_cache: list[dict] = []
+ftps_remote_preview_meta: str = ""
 auth_status = {
     "authorized": False,
     "message": "Авторизация не выполнялась.",
@@ -729,6 +732,69 @@ async def _fetch_preview(settings: Settings, limit: int = PREVIEW_LIMIT) -> tupl
         return False, f"Ошибка предпросмотра: {exc}", []
     finally:
         await client.disconnect()
+
+
+async def _fetch_ftps_preview(settings: Settings, limit: int = 300) -> tuple[bool, str, list[dict]]:
+    if not settings.use_ftps:
+        return False, "FTPS не используется.", []
+
+    channel_ref = (settings.channel or "").strip()
+    db = AppDatabase(DB_PATH)
+    ftps_sync = FTPSSync(settings)
+    try:
+        base_remote = (settings.ftps_remote_dir or "/").strip() or "/"
+        state = db.get_channel_state_by_ref(channel_ref) if channel_ref else {}
+        channel_title = str(state.get("channel_title", "") or channel_ref or "").strip()
+        folder_raw = str(state.get("download_folder", "") or "").strip()
+        if folder_raw:
+            channel_folder = Path(folder_raw).name
+        else:
+            channel_folder = sanitize_folder_name(channel_title or channel_ref or "_")
+
+        await asyncio.to_thread(ftps_sync.connect)
+
+        base_items = await asyncio.to_thread(ftps_sync.list_remote_entries, base_remote, max(20, limit))
+        channel_remote = (
+            posixpath.join(base_remote.rstrip("/"), channel_folder) if base_remote != "/" else f"/{channel_folder}"
+        )
+        channel_items = await asyncio.to_thread(ftps_sync.list_remote_entries, channel_remote, limit)
+
+        rows: list[dict] = []
+        for item in channel_items:
+            rows.append(
+                {
+                    "scope": "channel",
+                    "name": item.get("name", ""),
+                    "type": item.get("type", ""),
+                    "size": item.get("size", ""),
+                    "modify": item.get("modify", ""),
+                    "path": item.get("path", ""),
+                }
+            )
+
+        if not rows:
+            for item in base_items:
+                rows.append(
+                    {
+                        "scope": "base",
+                        "name": item.get("name", ""),
+                        "type": item.get("type", ""),
+                        "size": item.get("size", ""),
+                        "modify": item.get("modify", ""),
+                        "path": item.get("path", ""),
+                    }
+                )
+            return True, f"FTPS preview: channel dir empty/missing ({channel_remote}), showing base dir ({base_remote}).", rows
+
+        return True, f"FTPS preview: {len(rows)} entries from {channel_remote}", rows
+    except Exception as exc:
+        return False, f"FTPS preview error: {exc}", []
+    finally:
+        try:
+            await asyncio.to_thread(ftps_sync.close)
+        except Exception:
+            pass
+        db.close()
 
 
 async def _resolve_last_downloaded_message_id(settings: Settings) -> int:
@@ -1398,6 +1464,8 @@ def _render(form: dict, message: str = "", need_code: bool = False, need_passwor
         need_code=need_code,
         need_password=need_password,
         preview=preview_cache,
+        ftps_remote_preview=ftps_remote_preview_cache,
+        ftps_remote_preview_meta=ftps_remote_preview_meta,
     )
 
 
@@ -1420,8 +1488,13 @@ def _register_basic_routes() -> None:
             "store_settings": _store_settings,
             "upsert_current_channel_preference": _upsert_current_channel_preference,
             "fetch_preview": _fetch_preview,
+            "fetch_ftps_preview": _fetch_ftps_preview,
             "get_preview_cache": lambda: preview_cache,
             "set_preview_cache": lambda value: _set_preview_cache(value),
+            "get_ftps_remote_preview_cache": lambda: ftps_remote_preview_cache,
+            "set_ftps_remote_preview_cache": lambda value: _set_ftps_remote_preview_cache(value),
+            "get_ftps_remote_preview_meta": lambda: ftps_remote_preview_meta,
+            "set_ftps_remote_preview_meta": lambda value: _set_ftps_remote_preview_meta(value),
             "proxy_status": proxy_status,
             "sftp_status": sftp_status,
             "ftps_status": ftps_status,
@@ -1441,6 +1514,16 @@ def _register_basic_routes() -> None:
 def _set_preview_cache(value: list[dict]) -> None:
     global preview_cache
     preview_cache = value
+
+
+def _set_ftps_remote_preview_cache(value: list[dict]) -> None:
+    global ftps_remote_preview_cache
+    ftps_remote_preview_cache = value
+
+
+def _set_ftps_remote_preview_meta(value: str) -> None:
+    global ftps_remote_preview_meta
+    ftps_remote_preview_meta = str(value or "")
 
 
 _register_basic_routes()

@@ -69,6 +69,21 @@ def register_basic_routes(app, deps: dict) -> None:
             f"{deps['proxy_status']['message']} {deps['sftp_status']['message']} {deps['ftps_status']['message']} {preview_message}",
         )
 
+    @app.post("/preview_ftps")
+    def refresh_ftps_preview():
+        form = deps["form_from_request"]()
+        deps["store_enable_periodic_checks"](bool(form["enable_periodic_checks"]))
+        try:
+            settings = deps["build_settings"](form, require_channel=False)
+        except ValueError as exc:
+            return deps["render"](form, str(exc))
+        deps["store_settings"](settings)
+
+        ok, message, items = asyncio.run(deps["fetch_ftps_preview"](settings))
+        deps["set_ftps_remote_preview_cache"](items if ok else [])
+        deps["set_ftps_remote_preview_meta"](message)
+        return deps["render"](form, message)
+
     @app.post("/check_sftp")
     def check_sftp():
         form = deps["form_from_request"]()

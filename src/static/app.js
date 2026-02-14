@@ -17,6 +17,8 @@ async function runFormAction(action) {
           const needCode = doc.querySelector('#need-code-hint');
           const needPassword = doc.querySelector('#need-password-hint');
           const previewBody = doc.querySelector('#preview-table-body');
+          const remotePreviewBody = doc.querySelector('#remote-preview-table-body');
+          const remotePreviewMeta = doc.querySelector('#remote-preview-meta');
           if (result) {
             const target = document.getElementById('result-message');
             if (target) target.innerHTML = result.innerHTML;
@@ -32,6 +34,14 @@ async function runFormAction(action) {
           if (previewBody) {
             const target = document.getElementById('preview-table-body');
             if (target) target.innerHTML = previewBody.innerHTML;
+          }
+          if (remotePreviewBody) {
+            const target = document.getElementById('remote-preview-table-body');
+            if (target) target.innerHTML = remotePreviewBody.innerHTML;
+          }
+          if (remotePreviewMeta) {
+            const target = document.getElementById('remote-preview-meta');
+            if (target) target.innerHTML = remotePreviewMeta.innerHTML;
           }
           await refreshDebugLogs();
           return;

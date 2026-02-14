@@ -90,6 +90,7 @@
             <button class="btn secondary" formaction="/check_sftp" type="submit">Проверить SFTP</button>
             <button class="btn secondary" formaction="/check_ftps" type="submit">Проверить FTPS</button>
             <button class="btn secondary" formaction="/preview" type="submit">Обновить предпросмотр</button>
+            <button class="btn secondary" formaction="/preview_ftps" type="submit">Предпросмотр FTPS</button>
             <button id="download-toggle-btn" class="btn" type="button">Начать скачивание</button>
             <button id="upload-toggle-btn" class="btn secondary" type="button">Начать загрузку</button>
             <button class="btn secondary" formaction="/stop_server" type="submit">Стоп сервер</button>
@@ -437,6 +438,41 @@
             {% else %}
               <tr>
                 <td colspan="6">Нет данных. Нажмите "Авторизоваться" или "Обновить предпросмотр".</td>
+              </tr>
+            {% endif %}
+          </tbody>
+        </table>
+      </div>
+
+      <h2 style="margin-top:12px;">Предпросмотр FTPS каталога</h2>
+      <p id="remote-preview-meta" class="sub">{{ ftps_remote_preview_meta }}</p>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>scope</th>
+              <th>type</th>
+              <th>name</th>
+              <th>size</th>
+              <th>modify</th>
+              <th>path</th>
+            </tr>
+          </thead>
+          <tbody id="remote-preview-table-body">
+            {% if ftps_remote_preview %}
+              {% for item in ftps_remote_preview %}
+              <tr>
+                <td class="mono">{{ item.scope }}</td>
+                <td>{{ item.type }}</td>
+                <td>{{ item.name }}</td>
+                <td class="mono">{{ item.size }}</td>
+                <td class="mono">{{ item.modify }}</td>
+                <td class="mono">{{ item.path }}</td>
+              </tr>
+              {% endfor %}
+            {% else %}
+              <tr>
+                <td colspan="6">Нажмите "Предпросмотр FTPS", чтобы посмотреть файлы на удалённом каталоге.</td>
               </tr>
             {% endif %}
           </tbody>

@@ -225,6 +225,26 @@ class FTPSSync:
             return []
         return entries
 
+    async def _list_dir_detailed_async(self, remote_dir: str) -> list[dict]:
+        if not self._client:
+            return []
+        entries: list[dict] = []
+        try:
+            async for path, info in self._client.list(PurePosixPath(remote_dir)):
+                meta = dict(info or {})
+                entries.append(
+                    {
+                        "name": str(path.name),
+                        "path": str(path),
+                        "type": str(meta.get("type", "")),
+                        "size": str(meta.get("size", meta.get("st_size", ""))),
+                        "modify": str(meta.get("modify", "")),
+                    }
+                )
+        except Exception:
+            return []
+        return entries
+
     @staticmethod
     def _is_recoverable_error(exc: Exception) -> bool:
         if isinstance(exc, (ssl.SSLEOFError, BrokenPipeError, TimeoutError, socket.timeout, ConnectionError)):
@@ -676,6 +696,23 @@ class FTPSSync:
                 dirs.append(posixpath.join(base_dir.rstrip("/"), name))
         current = (self._remote_channel_dir or "").rstrip("/")
         return [item for item in dirs if item.rstrip("/") != current]
+
+    def list_remote_entries(self, remote_dir: str, limit: int = 200) -> list[dict]:
+        if not self.enabled:
+            return []
+        if not self._client:
+            raise RuntimeError("FTPS не подключен.")
+        normalized = self._normalize_remote_dir(remote_dir)
+        if not normalized:
+            normalized = "/"
+        with self._io_lock:
+            rows = self._run(
+                self._list_dir_detailed_async(normalized),
+                timeout=FTPS_LONG_TIMEOUT_SECONDS,
+            )
+        rows = rows[: max(1, int(limit))]
+        rows.sort(key=lambda item: (str(item.get("type", "")) != "dir", str(item.get("name", "")).casefold()))
+        return rows
 
     def _resolve_remote_name_from_listing(self, requested_file_name: str) -> str:
         requested_norm = self._normalize_name(requested_file_name)
