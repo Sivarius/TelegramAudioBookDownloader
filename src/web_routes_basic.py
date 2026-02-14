@@ -91,9 +91,16 @@ def register_basic_routes(app, deps: dict) -> None:
         ftps_ok, ftps_message = asyncio.run(deps["validate_ftps"](settings))
         if settings.use_ftps:
             deps["set_ftps_status"](True, ftps_ok, ftps_message)
+            if ftps_ok and (settings.channel or "").strip() and (settings.channel or "").strip() != "_":
+                audit_ok, audit_message = asyncio.run(deps["audit_ftps_selected_channel"](settings))
+                ftps_message = f"{ftps_message} {audit_message}".strip()
+                if audit_ok:
+                    preview_ok, _, items = asyncio.run(deps["fetch_preview"](settings))
+                    if preview_ok:
+                        deps["set_preview_cache"](items)
         else:
             deps["set_ftps_status"](False, True, "FTPS не используется.")
-        return deps["render"](form, deps["ftps_status"]["message"])
+        return deps["render"](form, ftps_message)
 
     @app.post("/channels_status")
     def channels_status():

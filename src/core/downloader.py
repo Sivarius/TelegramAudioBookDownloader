@@ -325,22 +325,32 @@ async def run_remote_uploader(
             return
 
         file_message_ids: dict[str, int] = {}
+        file_channel_ids: dict[str, int] = {}
         file_hashes: dict[str, str] = {}
-        if channel_id > 0:
-            for file_path in files:
-                message_id = db.get_message_id_by_file_path(channel_id, str(file_path))
-                if message_id <= 0:
-                    continue
-                file_message_ids[str(file_path)] = message_id
-                try:
-                    file_hashes[str(file_path)] = _get_or_build_local_hash(
-                        db,
-                        channel_id,
-                        message_id,
-                        file_path,
-                    )
-                except Exception:
-                    logging.exception("Failed to build local hash for %s", file_path)
+        for file_path in files:
+            path_key = str(file_path)
+            resolved_channel_id = int(channel_id or 0)
+            message_id = 0
+            if resolved_channel_id > 0:
+                message_id = db.get_message_id_by_file_path(resolved_channel_id, path_key)
+            if message_id <= 0:
+                record = db.get_download_record_by_file_path(path_key)
+                if record:
+                    resolved_channel_id = int(record.get("channel_id") or 0)
+                    message_id = int(record.get("message_id") or 0)
+            if resolved_channel_id <= 0 or message_id <= 0:
+                continue
+            file_channel_ids[path_key] = resolved_channel_id
+            file_message_ids[path_key] = message_id
+            try:
+                file_hashes[path_key] = _get_or_build_local_hash(
+                    db,
+                    resolved_channel_id,
+                    message_id,
+                    file_path,
+                )
+            except Exception:
+                logging.exception("Failed to build local hash for %s", file_path)
 
         channel_folder = local_dir.name
         transport = str(getattr(remote_sync, "name", "REMOTE"))
@@ -486,12 +496,16 @@ async def run_remote_uploader(
             marker = "remote="
             if marker in info:
                 remote_path = info.split(marker, 1)[1].split(";", 1)[0].strip()
-            if channel_id > 0:
-                message_id = file_message_ids.get(str(file_path), 0)
-                if message_id <= 0:
-                    message_id = db.get_message_id_by_file_path(channel_id, str(file_path))
-                if message_id > 0:
-                    db.mark_remote_uploaded(channel_id, message_id, transport, remote_path)
+            path_key = str(file_path)
+            resolved_channel_id = int(file_channel_ids.get(path_key, 0))
+            message_id = int(file_message_ids.get(path_key, 0))
+            if resolved_channel_id <= 0 or message_id <= 0:
+                record = db.get_download_record_by_file_path(path_key)
+                if record:
+                    resolved_channel_id = int(record.get("channel_id") or 0)
+                    message_id = int(record.get("message_id") or 0)
+            if resolved_channel_id > 0 and message_id > 0:
+                db.mark_remote_uploaded(resolved_channel_id, message_id, transport, remote_path)
             if status_hook:
                 status_hook(
                     {
@@ -545,57 +559,57 @@ async def run_remote_uploader(
                             )
             finally:
                 await asyncio.to_thread(remote_sync.close)
-            return
+        else:
+            queue: asyncio.Queue[Path] = asyncio.Queue()
+            for path in files:
+                queue.put_nowait(path)
 
-        queue: asyncio.Queue[Path] = asyncio.Queue()
-        for path in files:
-            queue.put_nowait(path)
+            sync_cls = type(remote_sync)
 
-        sync_cls = type(remote_sync)
-
-        async def _worker(worker_index: int) -> None:
-            sync_client = sync_cls(settings)
-            await asyncio.wait_for(asyncio.to_thread(sync_client.connect), timeout=30)
-            await asyncio.wait_for(
-                asyncio.to_thread(sync_client.prepare_channel_dir, channel_folder),
-                timeout=30,
-            )
-            try:
-                while True:
-                    if stop_requested and stop_requested():
-                        return
-                    try:
-                        file_path = queue.get_nowait()
-                    except asyncio.QueueEmpty:
-                        return
-                    transfer_id = f"upload:{worker_index}:{file_path.name}"
-                    try:
-                        await _run_upload_once(sync_client, file_path, transfer_id)
-                    except asyncio.CancelledError:
-                        return
-                    except Exception as exc:
-                        logging.exception(
-                            "Upload failed transfer_id=%s file=%s", transfer_id, file_path
-                        )
-                        if status_hook:
-                            status_hook(
-                                {
-                                    "event": "sftp_failed",
-                                    "message_id": transfer_id,
-                                    "file_path": str(file_path),
-                                    "reason": str(exc),
-                                    "transport": transport,
-                                }
+            async def _worker(worker_index: int) -> None:
+                sync_client = sync_cls(settings)
+                await asyncio.wait_for(asyncio.to_thread(sync_client.connect), timeout=30)
+                await asyncio.wait_for(
+                    asyncio.to_thread(sync_client.prepare_channel_dir, channel_folder),
+                    timeout=30,
+                )
+                try:
+                    while True:
+                        if stop_requested and stop_requested():
+                            return
+                        try:
+                            file_path = queue.get_nowait()
+                        except asyncio.QueueEmpty:
+                            return
+                        transfer_id = f"upload:{worker_index}:{file_path.name}"
+                        try:
+                            await _run_upload_once(sync_client, file_path, transfer_id)
+                        except asyncio.CancelledError:
+                            return
+                        except Exception as exc:
+                            logging.exception(
+                                "Upload failed transfer_id=%s file=%s", transfer_id, file_path
                             )
-                    finally:
-                        queue.task_done()
-            finally:
-                await asyncio.to_thread(sync_client.close)
+                            if status_hook:
+                                status_hook(
+                                    {
+                                        "event": "sftp_failed",
+                                        "message_id": transfer_id,
+                                        "file_path": str(file_path),
+                                        "reason": str(exc),
+                                        "transport": transport,
+                                    }
+                                )
+                        finally:
+                            queue.task_done()
+                finally:
+                    await asyncio.to_thread(sync_client.close)
 
-        workers = [asyncio.create_task(_worker(i + 1)) for i in range(concurrency)]
-        await asyncio.gather(*workers, return_exceptions=True)
+            workers = [asyncio.create_task(_worker(i + 1)) for i in range(concurrency)]
+            await asyncio.gather(*workers, return_exceptions=True)
 
         if cleanup_local_after_remote and not (stop_requested and stop_requested()):
+            sync_cls = type(remote_sync)
             verify_rounds = 2
             pending = [p for p in files if p.exists()]
             for round_index in range(1, verify_rounds + 1):
@@ -624,8 +638,14 @@ async def run_remote_uploader(
                                 file_path.unlink()
                             except Exception:
                                 logging.warning("Failed to remove local file after batch verify: %s", file_path)
-                            if channel_id > 0:
-                                db.delete_local_file_meta(channel_id, str(file_path))
+                            path_key = str(file_path)
+                            resolved_channel_id = int(file_channel_ids.get(path_key, 0))
+                            if resolved_channel_id <= 0:
+                                record = db.get_download_record_by_file_path(path_key)
+                                if record:
+                                    resolved_channel_id = int(record.get("channel_id") or 0)
+                            if resolved_channel_id > 0:
+                                db.delete_local_file_meta(resolved_channel_id, path_key)
                             if status_hook:
                                 status_hook(
                                     {

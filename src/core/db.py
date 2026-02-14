@@ -201,6 +201,48 @@ class AppDatabase:
         row = cur.fetchone()
         return int(row[0]) if row and row[0] else 0
 
+    def get_download_record_by_file_path(self, file_path: str) -> Optional[dict]:
+        normalized = (file_path or "").strip()
+        if not normalized:
+            return None
+        cur = self._conn.execute(
+            """
+            SELECT channel_id, message_id
+            FROM downloads
+            WHERE file_path = ?
+            LIMIT 1
+            """,
+            (normalized,),
+        )
+        row = cur.fetchone()
+        if not row:
+            return None
+        return {
+            "channel_id": int(row[0] or 0),
+            "message_id": int(row[1] or 0),
+        }
+
+    def list_downloads_by_channel(self, channel_id: int) -> list[dict]:
+        cur = self._conn.execute(
+            """
+            SELECT message_id, file_path
+            FROM downloads
+            WHERE channel_id = ?
+            ORDER BY message_id ASC
+            """,
+            (int(channel_id),),
+        )
+        rows = cur.fetchall()
+        result: list[dict] = []
+        for row in rows:
+            result.append(
+                {
+                    "message_id": int(row[0] or 0),
+                    "file_path": (row[1] or "").strip(),
+                }
+            )
+        return result
+
     def upsert_local_file_meta(
         self,
         channel_id: int,

@@ -1,5 +1,6 @@
 import asyncio
 from collections import deque
+import hashlib
 import logging
 import os
 import sqlite3
@@ -18,6 +19,7 @@ from telethon.errors import PhoneCodeExpiredError, PhoneCodeInvalidError, Sessio
 from core.config import setup_logging
 from core.db import AppDatabase
 from core.downloader import run_downloader, run_remote_uploader
+from core.ftps_client import FTPSSync
 from core.models import Settings
 from core.telegram_client import create_telegram_client, is_audio_message, resolve_channel_entity
 from web_form_ops import (
@@ -694,6 +696,125 @@ async def _resolve_last_downloaded_message_id(settings: Settings) -> int:
         await client.disconnect()
 
 
+def _sha256_local_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as file_obj:
+        while True:
+            chunk = file_obj.read(1024 * 512)
+            if not chunk:
+                break
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+async def _ftps_audit_selected_channel(settings: Settings) -> tuple[bool, str]:
+    if not settings.use_ftps:
+        return True, "FTPS не используется."
+    channel_ref = (settings.channel or "").strip()
+    if not channel_ref or channel_ref == "_":
+        return False, "Укажите CHANNEL_ID для проверки FTPS."
+
+    client = create_telegram_client(settings)
+    await client.connect()
+    db = AppDatabase(DB_PATH)
+    ftps_sync = FTPSSync(settings)
+    try:
+        if not await client.is_user_authorized():
+            return False, "Сессия не авторизована. Сначала нажмите Авторизоваться."
+        channel = await resolve_channel_entity(client, channel_ref)
+        channel_id = int(utils.get_peer_id(channel))
+        channel_title = getattr(channel, "title", channel_ref)
+        channel_folder = sanitize_folder_name(channel_title)
+
+        records = db.list_downloads_by_channel(channel_id)
+        if not records:
+            return True, "FTPS проверка: в БД нет локальных файлов для этого канала."
+
+        await asyncio.to_thread(ftps_sync.connect)
+        await asyncio.to_thread(ftps_sync.prepare_channel_dir, channel_folder)
+
+        checked = 0
+        verified = 0
+        cleaned = 0
+        missing_remote = 0
+        failed = 0
+        for record in records:
+            file_path_raw = (record.get("file_path") or "").strip()
+            message_id = int(record.get("message_id") or 0)
+            if not file_path_raw or message_id <= 0:
+                continue
+            file_path = Path(file_path_raw)
+            if not file_path.exists() or not file_path.is_file():
+                continue
+            checked += 1
+
+            local_hash = ""
+            try:
+                stat = file_path.stat()
+                existing = db.get_local_file_meta_by_path(channel_id, str(file_path))
+                if (
+                    existing
+                    and int(existing.get("file_size", 0)) == int(stat.st_size)
+                    and abs(float(existing.get("file_mtime", 0.0)) - float(stat.st_mtime)) < 0.0001
+                    and str(existing.get("file_sha256", "")).strip()
+                ):
+                    local_hash = str(existing.get("file_sha256", "")).strip()
+                else:
+                    local_hash = _sha256_local_file(file_path)
+                    db.upsert_local_file_meta(
+                        channel_id=channel_id,
+                        message_id=message_id,
+                        file_path=str(file_path),
+                        file_size=int(stat.st_size),
+                        file_mtime=float(stat.st_mtime),
+                        file_sha256=local_hash,
+                    )
+            except Exception:
+                logging.exception("FTPS audit: failed to compute local hash for %s", file_path)
+
+            ok, info = await asyncio.to_thread(
+                ftps_sync.check_remote_file_status,
+                str(file_path),
+                True,
+                local_hash,
+            )
+            if ok:
+                verified += 1
+                remote_path = ""
+                marker = "remote="
+                if marker in info:
+                    remote_path = info.split(marker, 1)[1].split(";", 1)[0].strip()
+                db.mark_remote_uploaded(channel_id, message_id, "FTPS", remote_path)
+                if settings.cleanup_local_after_ftps:
+                    try:
+                        file_path.unlink()
+                        db.delete_local_file_meta(channel_id, str(file_path))
+                        cleaned += 1
+                    except Exception:
+                        logging.warning("FTPS audit: failed to delete local file %s", file_path)
+            else:
+                if "remote_missing" in info:
+                    missing_remote += 1
+                else:
+                    failed += 1
+
+        return (
+            True,
+            "FTPS проверка: "
+            f"проверено {checked}, подтверждено {verified}, отсутствуют на сервере {missing_remote}, ошибок {failed}, "
+            f"локально удалено {cleaned}.",
+        )
+    except Exception as exc:
+        return False, f"FTPS проверка: ошибка ({exc})"
+    finally:
+        try:
+            await asyncio.to_thread(ftps_sync.close)
+        except Exception:
+            pass
+        db.close()
+        await client.disconnect()
+
+
 def _pick_range_ids(items: list[dict], from_index_raw: str, to_index_raw: str) -> Optional[set[int]]:
     if not from_index_raw and not to_index_raw:
         return None
@@ -1157,6 +1278,7 @@ def _register_basic_routes() -> None:
             "set_sftp_status": _set_sftp_status,
             "validate_ftps": _validate_ftps,
             "set_ftps_status": _set_ftps_status,
+            "audit_ftps_selected_channel": _ftps_audit_selected_channel,
             "collect_saved_channels_status": _collect_saved_channels_status,
             "collect_saved_channels_cached": _collect_saved_channels_cached,
             "safe_int": _safe_int,
