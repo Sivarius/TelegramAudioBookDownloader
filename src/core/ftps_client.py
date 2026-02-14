@@ -1,69 +1,31 @@
+import asyncio
 import hashlib
 import os
 import posixpath
 import socket
 import ssl
 import threading
-from ftplib import FTP, FTP_TLS, error_perm
+from concurrent.futures import Future, TimeoutError as FutureTimeoutError
+from pathlib import PurePosixPath
 from typing import Callable, Optional
+
+import aioftp
+from aioftp.errors import StatusCodeError
 
 from core.models import Settings
 
 FTPS_TIMEOUT_SECONDS = 30
 
 
-class ReusedSslSocket(ssl.SSLSocket):
-    def unwrap(self):
-        # Some FTPS servers close data TLS channel without proper TLS close_notify.
-        # Avoid surfacing noisy unwrap errors in this case.
-        return None
-
-
-class ReusedSessionFTP_TLS(FTP_TLS):
-    """Explicit FTPS with shared TLS session for data channel."""
-
-    def ntransfercmd(self, cmd: str, rest=None):
-        conn, size = FTP.ntransfercmd(self, cmd, rest)
-        if self._prot_p:
-            session = getattr(self.sock, "session", None)
-            if session is not None:
-                conn = self.context.wrap_socket(
-                    conn,
-                    server_hostname=self.host,
-                    session=session,
-                )
-            else:
-                conn = self.context.wrap_socket(conn, server_hostname=self.host)
-            conn.__class__ = ReusedSslSocket
-        return conn, size
-
-
-class ImplicitFTP_TLS(ReusedSessionFTP_TLS):
-    """Minimal implicit FTPS client (TLS starts on connect)."""
-
-    def connect(self, host: str = "", port: int = 0) -> str:
-        if host:
-            self.host = host
-        if port:
-            self.port = port
-        self.sock = socket.create_connection(
-            (self.host, self.port),
-            timeout=self.timeout,
-        )
-        self.af = self.sock.family
-        self.sock = self.context.wrap_socket(self.sock, server_hostname=self.host)
-        self.file = self.sock.makefile("r", encoding=self.encoding)
-        self.welcome = self.getresp()
-        return self.welcome
-
-
 class FTPSSync:
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
-        self._ftps: Optional[FTP_TLS] = None
+        self._client: Optional[aioftp.Client] = None
         self._remote_channel_dir = ""
         self._remote_file_names: set[str] = set()
         self._io_lock = threading.Lock()
+        self._loop: Optional[asyncio.AbstractEventLoop] = None
+        self._loop_thread: Optional[threading.Thread] = None
 
     @property
     def enabled(self) -> bool:
@@ -77,22 +39,47 @@ class FTPSSync:
     def name(self) -> str:
         return "FTPS"
 
-    def _resolve_ftps_encoding(self, ftps: FTP_TLS) -> str:
-        configured = (self.settings.ftps_encoding or "auto").strip().lower()
-        if configured != "auto":
-            return configured
+    def _start_loop(self) -> None:
+        if self._loop and self._loop_thread and self._loop_thread.is_alive():
+            return
+
+        loop = asyncio.new_event_loop()
+
+        def _runner() -> None:
+            asyncio.set_event_loop(loop)
+            loop.run_forever()
+
+        thread = threading.Thread(target=_runner, name="ftps-aioftp-loop", daemon=True)
+        thread.start()
+        self._loop = loop
+        self._loop_thread = thread
+
+    def _stop_loop(self) -> None:
+        if not self._loop:
+            return
         try:
-            feat = ftps.sendcmd("FEAT")
-            upper_feat = feat.upper()
-            if "UTF8" in upper_feat:
-                try:
-                    ftps.sendcmd("OPTS UTF8 ON")
-                except Exception:
-                    pass
-                return "utf-8"
+            self._loop.call_soon_threadsafe(self._loop.stop)
         except Exception:
             pass
-        return "cp1251"
+        if self._loop_thread:
+            self._loop_thread.join(timeout=2)
+        self._loop = None
+        self._loop_thread = None
+
+    def _run(self, coro, timeout: int = FTPS_TIMEOUT_SECONDS + 30):
+        if not self._loop:
+            raise RuntimeError("FTPS loop is not started.")
+        fut: Future = asyncio.run_coroutine_threadsafe(coro, self._loop)
+        try:
+            return fut.result(timeout=timeout)
+        except FutureTimeoutError as exc:
+            fut.cancel()
+            raise TimeoutError(f"FTPS operation timed out after {timeout}s") from exc
+
+    def _build_ssl_context(self) -> ssl.SSLContext:
+        if self.settings.ftps_verify_tls:
+            return ssl.create_default_context()
+        return ssl._create_unverified_context()
 
     def connect(self) -> None:
         if not self.enabled:
@@ -102,48 +89,56 @@ class FTPSSync:
             raise ValueError("FTPS включен, но не заполнены host/username.")
         if self.settings.ftps_port <= 0 or self.settings.ftps_port > 65535:
             raise ValueError("FTPS_PORT должен быть в диапазоне 1..65535.")
+        if not self.settings.ftps_passive_mode:
+            raise ValueError("FTPS active mode не поддерживается aioftp. Включите пассивный режим.")
+        if self.settings.ftps_security_mode not in {"explicit", "implicit"}:
+            raise ValueError("FTPS security mode должен быть explicit или implicit.")
 
-        if self.settings.ftps_verify_tls:
-            context = ssl.create_default_context()
-        else:
-            context = ssl._create_unverified_context()
-        initial_encoding = (
-            (self.settings.ftps_encoding or "auto").strip().lower()
-            if (self.settings.ftps_encoding or "auto").strip().lower() != "auto"
-            else "utf-8"
-        )
+        self._start_loop()
+        self._run(self._connect_async())
+
+    async def _connect_async(self) -> None:
         if self.settings.ftps_security_mode == "implicit":
-            ftps: FTP_TLS = ImplicitFTP_TLS(
-                context=context,
-                timeout=FTPS_TIMEOUT_SECONDS,
-                encoding=initial_encoding,
-            )
+            # aioftp handles implicit FTPS through preconfigured SSL context.
+            ssl_opt: ssl.SSLContext | bool | None = self._build_ssl_context()
         else:
-            ftps = ReusedSessionFTP_TLS(
-                context=context,
-                timeout=FTPS_TIMEOUT_SECONDS,
-                encoding=initial_encoding,
-            )
-        ftps.connect(host=self.settings.ftps_host, port=self.settings.ftps_port)
-        if ftps.sock is not None:
-            ftps.sock.settimeout(FTPS_TIMEOUT_SECONDS)
-        ftps.login(user=self.settings.ftps_username, passwd=self.settings.ftps_password or "")
-        ftps.encoding = self._resolve_ftps_encoding(ftps)
-        ftps.prot_p()
-        ftps.set_pasv(bool(self.settings.ftps_passive_mode))
-        self._ftps = ftps
+            ssl_opt = None
+
+        encoding = (self.settings.ftps_encoding or "auto").strip().lower()
+        if encoding == "auto":
+            encoding = "utf-8"
+
+        client = aioftp.Client(
+            socket_timeout=FTPS_TIMEOUT_SECONDS,
+            connection_timeout=FTPS_TIMEOUT_SECONDS,
+            encoding=encoding,
+            ssl=ssl_opt,
+        )
+        await client.connect(host=self.settings.ftps_host, port=self.settings.ftps_port)
+        if self.settings.ftps_security_mode == "explicit":
+            await client.upgrade_to_tls(self._build_ssl_context())
+        await client.login(user=self.settings.ftps_username, password=self.settings.ftps_password or "")
+        self._client = client
 
     def close(self) -> None:
-        if not self._ftps:
-            return
-        try:
-            self._ftps.quit()
-        except Exception:
+        if self._loop and self._client is not None:
             try:
-                self._ftps.close()
+                self._run(self._close_async(), timeout=10)
             except Exception:
                 pass
-        self._ftps = None
+        self._client = None
+        self._stop_loop()
+
+    async def _close_async(self) -> None:
+        if not self._client:
+            return
+        try:
+            await self._client.quit()
+        except Exception:
+            try:
+                await self._client.close()
+            except Exception:
+                pass
 
     def validate_connection(self) -> tuple[bool, str]:
         if not self.enabled:
@@ -152,9 +147,11 @@ class FTPSSync:
             self.connect()
             base_remote = self.ensure_remote_dir((self.settings.ftps_remote_dir or "/").strip() or "/")
             tls_mode = "verify=on" if self.settings.ftps_verify_tls else "verify=off"
-            transfer_mode = "passive" if self.settings.ftps_passive_mode else "active"
+            transfer_mode = "passive"
             secure_mode = self.settings.ftps_security_mode
-            encoding = getattr(self._ftps, "encoding", "utf-8")
+            encoding = (self.settings.ftps_encoding or "auto").strip().lower()
+            if encoding == "auto":
+                encoding = "utf-8"
             return (
                 True,
                 "FTPS: подключение установлено "
@@ -183,35 +180,37 @@ class FTPSSync:
     def prepare_channel_dir(self, channel_folder: str) -> None:
         if not self.enabled:
             return
-        if not self._ftps:
+        if not self._client:
             raise RuntimeError("FTPS is not connected.")
 
-        base_remote = self.ensure_remote_dir((self.settings.ftps_remote_dir or "/").strip() or "/")
-        channel_remote = posixpath.join(base_remote.rstrip("/"), channel_folder) if base_remote != "/" else f"/{channel_folder}"
-        channel_remote = self.ensure_remote_dir(channel_remote)
-        self._remote_channel_dir = channel_remote
-        try:
-            names = self._ftps.nlst(channel_remote)
-        except Exception:
-            names = []
-        self._remote_file_names = {posixpath.basename(name.rstrip("/")) for name in names}
+        with self._io_lock:
+            base_remote = self.ensure_remote_dir((self.settings.ftps_remote_dir or "/").strip() or "/")
+            channel_remote = (
+                posixpath.join(base_remote.rstrip("/"), channel_folder)
+                if base_remote != "/"
+                else f"/{channel_folder}"
+            )
+            channel_remote = self.ensure_remote_dir(channel_remote)
+            self._remote_channel_dir = channel_remote
+            self._remote_file_names = self._run(self._list_names_async(channel_remote), timeout=FTPS_TIMEOUT_SECONDS)
 
-    def _keepalive(self) -> None:
-        if not self._ftps:
-            return
-        self._ftps.voidcmd("NOOP")
+    async def _list_names_async(self, remote_dir: str) -> set[str]:
+        if not self._client:
+            return set()
+        names: set[str] = set()
+        try:
+            async for path, _ in self._client.list(PurePosixPath(remote_dir)):
+                names.add(path.name)
+        except Exception:
+            return set()
+        return names
 
     @staticmethod
     def _is_recoverable_error(exc: Exception) -> bool:
-        if isinstance(exc, (ssl.SSLEOFError, BrokenPipeError, TimeoutError, socket.timeout)):
+        if isinstance(exc, (ssl.SSLEOFError, BrokenPipeError, TimeoutError, socket.timeout, ConnectionError)):
             return True
-        if isinstance(exc, OSError):
-            if getattr(exc, "errno", None) in {32, 54, 104, 110}:
-                return True
-        if isinstance(exc, error_perm):
-            text = str(exc).lower()
-            if "425" in text or "426" in text:
-                return True
+        if isinstance(exc, OSError) and getattr(exc, "errno", None) in {32, 54, 104, 110}:
+            return True
         text = str(exc).lower()
         return "timed out" in text or "broken pipe" in text or "eof occurred" in text
 
@@ -225,8 +224,6 @@ class FTPSSync:
             self.prepare_channel_dir(channel_folder)
 
     def ensure_remote_dir(self, remote_dir: str) -> str:
-        if not self._ftps:
-            raise RuntimeError("FTPS is not connected.")
         path = self._normalize_remote_dir(remote_dir)
         if not path:
             return "."
@@ -240,10 +237,9 @@ class FTPSSync:
         last_exc: Optional[Exception] = None
         for candidate in candidates:
             try:
-                self._ensure_remote_dir_once(candidate)
+                self._run(self._ensure_remote_dir_async(candidate), timeout=FTPS_TIMEOUT_SECONDS)
                 return candidate
-            except error_perm as exc:
-                # Some FTPS servers deny absolute paths in jailed home; retry as relative.
+            except Exception as exc:
                 last_exc = exc
 
         if last_exc:
@@ -257,8 +253,8 @@ class FTPSSync:
             normalized = normalized.replace("//", "/")
         return normalized
 
-    def _ensure_remote_dir_once(self, path: str) -> None:
-        if not self._ftps:
+    async def _ensure_remote_dir_async(self, path: str) -> None:
+        if not self._client:
             raise RuntimeError("FTPS is not connected.")
         if path in {"", ".", "./"}:
             return
@@ -267,11 +263,10 @@ class FTPSSync:
         current = "/" if is_abs else ""
         for part in parts:
             current = posixpath.join(current, part) if current else part
-            try:
-                self._ftps.cwd(current)
-            except error_perm:
-                self._ftps.mkd(current)
-                self._ftps.cwd(current)
+            target = PurePosixPath(current)
+            exists = await self._client.exists(target)
+            if not exists:
+                await self._client.make_directory(target, parents=True)
 
     def upload_file_if_needed(
         self,
@@ -282,7 +277,7 @@ class FTPSSync:
     ) -> tuple[bool, str]:
         if not self.enabled:
             return False, "FTPS выключен."
-        if not self._ftps:
+        if not self._client:
             return False, "FTPS не подключен."
         if not self._remote_channel_dir:
             return False, "Не подготовлен удаленный каталог."
@@ -296,71 +291,18 @@ class FTPSSync:
             last_exc: Optional[Exception] = None
             for attempt in range(1, attempts + 1):
                 try:
-                    self._keepalive()
                     remote_path = posixpath.join(self._remote_channel_dir, file_name)
-                    uploaded = False
-                    reuploaded = False
-                    remote_exists = False
-                    if file_name in self._remote_file_names:
-                        remote_exists = True
-                    else:
-                        try:
-                            remote_exists = self._remote_exists(remote_path)
-                        except Exception:
-                            remote_exists = False
-
-                    if remote_exists and not force_upload:
-                        size_match, hash_match = self.verify_remote_file(
+                    uploaded, reason = self._run(
+                        self._upload_file_if_needed_async(
                             local_file_path,
                             remote_path,
-                            verify_hash=verify_hash,
-                        )
-                        verified = size_match and hash_match
-                        if verified:
-                            self._remote_file_names.add(file_name)
-                            return (
-                                False,
-                                f"already_exists; remote={remote_path}; size_match={size_match}; hash_match={hash_match}; verified={verified}",
-                            )
-                        reuploaded = True
-
-                    if force_upload or not remote_exists or reuploaded:
-                        total_size = os.path.getsize(local_file_path)
-                        sent_bytes = 0
-
-                        def _block_progress(chunk: bytes) -> None:
-                            nonlocal sent_bytes
-                            sent_bytes += len(chunk)
-                            if progress_callback:
-                                progress_callback(min(sent_bytes, total_size), total_size)
-
-                        with open(local_file_path, "rb") as file_obj:
-                            self._ftps.storbinary(
-                                f"STOR {remote_path}",
-                                file_obj,
-                                blocksize=1024 * 256,
-                                callback=_block_progress,
-                            )
-                        if progress_callback:
-                            progress_callback(total_size, total_size)
-                        self._remote_file_names.add(file_name)
-                        uploaded = True
-
-                    size_match, hash_match = self.verify_remote_file(
-                        local_file_path,
-                        remote_path,
-                        verify_hash=verify_hash,
+                            progress_callback,
+                            verify_hash,
+                            force_upload,
+                        ),
+                        timeout=max(FTPS_TIMEOUT_SECONDS + 30, 240),
                     )
-                    verified = size_match and hash_match
-                    if not verified:
-                        raise RuntimeError(
-                            f"FTPS verify failed: remote={remote_path} size_match={size_match} hash_match={hash_match}"
-                        )
-                    reason = "reuploaded" if reuploaded else ("uploaded" if uploaded else "already_exists")
-                    return (
-                        uploaded,
-                        f"{reason}; remote={remote_path}; size_match={size_match}; hash_match={hash_match}; verified={verified}",
-                    )
+                    return uploaded, reason
                 except Exception as exc:
                     last_exc = exc
                     if attempt >= attempts or not self._is_recoverable_error(exc):
@@ -375,6 +317,76 @@ class FTPSSync:
                 raise last_exc
             raise RuntimeError("FTPS upload failed for unknown reason.")
 
+    async def _upload_file_if_needed_async(
+        self,
+        local_file_path: str,
+        remote_path: str,
+        progress_callback: Optional[Callable[[int, int], None]],
+        verify_hash: bool,
+        force_upload: bool,
+    ) -> tuple[bool, str]:
+        if not self._client:
+            raise RuntimeError("FTPS не подключен.")
+
+        file_name = os.path.basename(local_file_path)
+        uploaded = False
+        reuploaded = False
+
+        remote_exists = False
+        if file_name in self._remote_file_names:
+            remote_exists = True
+        else:
+            remote_exists = await self._remote_exists_async(remote_path)
+
+        if remote_exists and not force_upload:
+            size_match, hash_match = await self._verify_remote_file_async(
+                local_file_path,
+                remote_path,
+                verify_hash=verify_hash,
+            )
+            verified = size_match and hash_match
+            if verified:
+                self._remote_file_names.add(file_name)
+                return (
+                    False,
+                    f"already_exists; remote={remote_path}; size_match={size_match}; hash_match={hash_match}; verified={verified}",
+                )
+            reuploaded = True
+
+        if force_upload or not remote_exists or reuploaded:
+            total_size = os.path.getsize(local_file_path)
+            sent_bytes = 0
+            with open(local_file_path, "rb") as file_obj:
+                async with self._client.upload_stream(PurePosixPath(remote_path), offset=0) as stream:
+                    while True:
+                        chunk = file_obj.read(1024 * 256)
+                        if not chunk:
+                            break
+                        await stream.write(chunk)
+                        sent_bytes += len(chunk)
+                        if progress_callback:
+                            progress_callback(min(sent_bytes, total_size), total_size)
+            if progress_callback:
+                progress_callback(total_size, total_size)
+            self._remote_file_names.add(file_name)
+            uploaded = True
+
+        size_match, hash_match = await self._verify_remote_file_async(
+            local_file_path,
+            remote_path,
+            verify_hash=verify_hash,
+        )
+        verified = size_match and hash_match
+        if not verified:
+            raise RuntimeError(
+                f"FTPS verify failed: remote={remote_path} size_match={size_match} hash_match={hash_match}"
+            )
+        reason = "reuploaded" if reuploaded else ("uploaded" if uploaded else "already_exists")
+        return (
+            uploaded,
+            f"{reason}; remote={remote_path}; size_match={size_match}; hash_match={hash_match}; verified={verified}",
+        )
+
     def verify_remote_file(
         self,
         local_file_path: str,
@@ -382,17 +394,34 @@ class FTPSSync:
         verify_hash: bool = False,
         local_hash: str = "",
     ) -> tuple[bool, bool]:
-        if not self._ftps:
+        return self._run(
+            self._verify_remote_file_async(
+                local_file_path,
+                remote_file_path,
+                verify_hash=verify_hash,
+                local_hash=local_hash,
+            ),
+            timeout=max(FTPS_TIMEOUT_SECONDS + 30, 240),
+        )
+
+    async def _verify_remote_file_async(
+        self,
+        local_file_path: str,
+        remote_file_path: str,
+        verify_hash: bool = False,
+        local_hash: str = "",
+    ) -> tuple[bool, bool]:
+        if not self._client:
             raise RuntimeError("FTPS не подключен.")
 
         local_size = os.path.getsize(local_file_path)
-        remote_size = self._ftps.size(remote_file_path) or 0
+        remote_size = await self._remote_size_async(remote_file_path)
         size_match = int(remote_size) == int(local_size)
 
         hash_match = True
         if verify_hash:
             local_hash_value = local_hash.strip() if local_hash else self._sha256_local(local_file_path)
-            remote_hash = self._sha256_remote(remote_file_path)
+            remote_hash = await self._sha256_remote_async(remote_file_path)
             hash_match = local_hash_value == remote_hash
         return size_match, hash_match
 
@@ -404,7 +433,7 @@ class FTPSSync:
     ) -> tuple[bool, str]:
         if not self.enabled:
             return False, "FTPS выключен."
-        if not self._ftps:
+        if not self._client:
             return False, "FTPS не подключен."
         if not self._remote_channel_dir:
             return False, "Не подготовлен удаленный каталог."
@@ -412,8 +441,10 @@ class FTPSSync:
         if not file_name:
             return False, "Пустое имя файла."
         remote_path = posixpath.join(self._remote_channel_dir, file_name)
-        if not self._remote_exists(remote_path):
+
+        if not self._run(self._remote_exists_async(remote_path), timeout=FTPS_TIMEOUT_SECONDS):
             return False, f"remote_missing; remote={remote_path}"
+
         size_match, hash_match = self.verify_remote_file(
             local_file_path,
             remote_path,
@@ -428,17 +459,23 @@ class FTPSSync:
             f"remote={remote_path}; size_match={size_match}; hash_match={hash_match}; verified={verified}",
         )
 
-    def _remote_exists(self, remote_file_path: str) -> bool:
-        if not self._ftps:
+    async def _remote_exists_async(self, remote_file_path: str) -> bool:
+        if not self._client:
             raise RuntimeError("FTPS не подключен.")
         try:
-            size = self._ftps.size(remote_file_path)
-            return size is not None
-        except error_perm as exc:
-            # 550 commonly means missing file / denied; for existence check treat as missing.
-            if "550" in str(exc):
+            return await self._client.exists(PurePosixPath(remote_file_path))
+        except StatusCodeError as exc:
+            text = str(exc).lower()
+            if "550" in text:
                 return False
             raise
+
+    async def _remote_size_async(self, remote_file_path: str) -> int:
+        if not self._client:
+            raise RuntimeError("FTPS не подключен.")
+        stat = await self._client.stat(PurePosixPath(remote_file_path))
+        size_raw = stat.get("size") or stat.get("st_size") or 0
+        return int(size_raw)
 
     @staticmethod
     def _sha256_local(path: str) -> str:
@@ -451,13 +488,11 @@ class FTPSSync:
                 digest.update(chunk)
         return digest.hexdigest()
 
-    def _sha256_remote(self, remote_path: str) -> str:
-        if not self._ftps:
+    async def _sha256_remote_async(self, remote_path: str) -> str:
+        if not self._client:
             raise RuntimeError("FTPS не подключен.")
         digest = hashlib.sha256()
-
-        def _collector(chunk: bytes) -> None:
-            digest.update(chunk)
-
-        self._ftps.retrbinary(f"RETR {remote_path}", _collector, blocksize=1024 * 512)
+        async with self._client.download_stream(PurePosixPath(remote_path), offset=0) as stream:
+            async for chunk in stream.iter_by_block(1024 * 512):
+                digest.update(chunk)
         return digest.hexdigest()
