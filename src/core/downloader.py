@@ -1,4 +1,5 @@
 import asyncio
+import hashlib
 import logging
 from pathlib import Path
 from typing import Callable, Optional
@@ -46,6 +47,41 @@ def _build_target_path(download_dir: Path, message: Message, existing_path: str)
             ext = str(message.file.ext or "")
         original_name = f"message_{message.id}{ext}"
     return download_dir / original_name
+
+
+def _sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as file_obj:
+        while True:
+            chunk = file_obj.read(1024 * 512)
+            if not chunk:
+                break
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _get_or_build_local_hash(db: AppDatabase, channel_id: int, message_id: int, file_path: Path) -> str:
+    stat = file_path.stat()
+    file_size = int(stat.st_size)
+    file_mtime = float(stat.st_mtime)
+    existing = db.get_local_file_meta_by_path(channel_id, str(file_path))
+    if (
+        existing
+        and int(existing.get("file_size", 0)) == file_size
+        and abs(float(existing.get("file_mtime", 0.0)) - file_mtime) < 0.0001
+        and str(existing.get("file_sha256", "")).strip()
+    ):
+        return str(existing.get("file_sha256")).strip()
+    file_sha256 = _sha256_file(file_path)
+    db.upsert_local_file_meta(
+        channel_id=channel_id,
+        message_id=message_id,
+        file_path=str(file_path),
+        file_size=file_size,
+        file_mtime=file_mtime,
+        file_sha256=file_sha256,
+    )
+    return file_sha256
 
 
 async def download_if_needed(
@@ -288,6 +324,24 @@ async def run_remote_uploader(
                 status_hook({"event": "upload_done", "message": "Нет файлов для загрузки."})
             return
 
+        file_message_ids: dict[str, int] = {}
+        file_hashes: dict[str, str] = {}
+        if channel_id > 0:
+            for file_path in files:
+                message_id = db.get_message_id_by_file_path(channel_id, str(file_path))
+                if message_id <= 0:
+                    continue
+                file_message_ids[str(file_path)] = message_id
+                try:
+                    file_hashes[str(file_path)] = _get_or_build_local_hash(
+                        db,
+                        channel_id,
+                        message_id,
+                        file_path,
+                    )
+                except Exception:
+                    logging.exception("Failed to build local hash for %s", file_path)
+
         channel_folder = local_dir.name
         transport = str(getattr(remote_sync, "name", "REMOTE"))
         cleanup_local_after_remote = (
@@ -306,7 +360,12 @@ async def run_remote_uploader(
                 }
             )
 
-        async def _run_upload_once(sync_client: object, file_path: Path, transfer_id: str) -> None:
+        async def _run_upload_once(
+            sync_client: object,
+            file_path: Path,
+            transfer_id: str,
+            force_upload: bool = False,
+        ) -> None:
             if stop_requested and stop_requested():
                 raise asyncio.CancelledError()
             if status_hook:
@@ -349,6 +408,7 @@ async def run_remote_uploader(
                             cleanup_local_after_remote
                             and str(getattr(sync_client, "name", "")).upper() != "FTPS"
                         ),
+                        force_upload,
                     )
                     break
                 except Exception as exc:
@@ -427,7 +487,9 @@ async def run_remote_uploader(
             if marker in info:
                 remote_path = info.split(marker, 1)[1].split(";", 1)[0].strip()
             if channel_id > 0:
-                message_id = db.get_message_id_by_file_path(channel_id, str(file_path))
+                message_id = file_message_ids.get(str(file_path), 0)
+                if message_id <= 0:
+                    message_id = db.get_message_id_by_file_path(channel_id, str(file_path))
                 if message_id > 0:
                     db.mark_remote_uploaded(channel_id, message_id, transport, remote_path)
             if status_hook:
@@ -532,6 +594,89 @@ async def run_remote_uploader(
 
         workers = [asyncio.create_task(_worker(i + 1)) for i in range(concurrency)]
         await asyncio.gather(*workers, return_exceptions=True)
+
+        if cleanup_local_after_remote and not (stop_requested and stop_requested()):
+            verify_rounds = 2
+            pending = [p for p in files if p.exists()]
+            for round_index in range(1, verify_rounds + 1):
+                if not pending:
+                    break
+                verify_client = sync_cls(settings)
+                await asyncio.wait_for(asyncio.to_thread(verify_client.connect), timeout=30)
+                await asyncio.wait_for(
+                    asyncio.to_thread(verify_client.prepare_channel_dir, channel_folder),
+                    timeout=30,
+                )
+                mismatches: list[Path] = []
+                try:
+                    for file_path in pending:
+                        if stop_requested and stop_requested():
+                            break
+                        file_hash = file_hashes.get(str(file_path), "")
+                        ok, verify_info = await asyncio.to_thread(
+                            verify_client.check_remote_file_status,
+                            str(file_path),
+                            True,
+                            file_hash,
+                        )
+                        if ok:
+                            try:
+                                file_path.unlink()
+                            except Exception:
+                                logging.warning("Failed to remove local file after batch verify: %s", file_path)
+                            if channel_id > 0:
+                                db.delete_local_file_meta(channel_id, str(file_path))
+                            if status_hook:
+                                status_hook(
+                                    {
+                                        "event": "local_cleaned",
+                                        "message_id": f"upload:{file_path.name}",
+                                        "file_path": str(file_path),
+                                        "transport": transport,
+                                    }
+                                )
+                        else:
+                            logging.warning(
+                                "Batch verify mismatch round=%s file=%s info=%s",
+                                round_index,
+                                file_path,
+                                verify_info,
+                            )
+                            mismatches.append(file_path)
+                finally:
+                    await asyncio.to_thread(verify_client.close)
+
+                if not mismatches:
+                    break
+                if round_index >= verify_rounds:
+                    for file_path in mismatches:
+                        if status_hook:
+                            status_hook(
+                                {
+                                    "event": "sftp_failed",
+                                    "message_id": f"upload:{file_path.name}",
+                                    "file_path": str(file_path),
+                                    "reason": "Batch hash verify mismatch after retries",
+                                    "transport": transport,
+                                }
+                            )
+                    break
+
+                retry_client = sync_cls(settings)
+                await asyncio.wait_for(asyncio.to_thread(retry_client.connect), timeout=30)
+                await asyncio.wait_for(
+                    asyncio.to_thread(retry_client.prepare_channel_dir, channel_folder),
+                    timeout=30,
+                )
+                try:
+                    for file_path in mismatches:
+                        if stop_requested and stop_requested():
+                            break
+                        transfer_id = f"upload:rehash:{file_path.name}"
+                        await _run_upload_once(retry_client, file_path, transfer_id, True)
+                finally:
+                    await asyncio.to_thread(retry_client.close)
+                pending = [p for p in mismatches if p.exists()]
     finally:
         db.close()
 

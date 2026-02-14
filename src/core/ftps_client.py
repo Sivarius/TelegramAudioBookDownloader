@@ -278,6 +278,7 @@ class FTPSSync:
         local_file_path: str,
         progress_callback: Optional[Callable[[int, int], None]] = None,
         verify_hash: bool = False,
+        force_upload: bool = False,
     ) -> tuple[bool, str]:
         if not self.enabled:
             return False, "FTPS выключен."
@@ -308,7 +309,7 @@ class FTPSSync:
                         except Exception:
                             remote_exists = False
 
-                    if remote_exists:
+                    if remote_exists and not force_upload:
                         size_match, hash_match = self.verify_remote_file(
                             local_file_path,
                             remote_path,
@@ -323,7 +324,7 @@ class FTPSSync:
                             )
                         reuploaded = True
 
-                    if not remote_exists or reuploaded:
+                    if force_upload or not remote_exists or reuploaded:
                         total_size = os.path.getsize(local_file_path)
                         sent_bytes = 0
 
@@ -379,6 +380,7 @@ class FTPSSync:
         local_file_path: str,
         remote_file_path: str,
         verify_hash: bool = False,
+        local_hash: str = "",
     ) -> tuple[bool, bool]:
         if not self._ftps:
             raise RuntimeError("FTPS не подключен.")
@@ -389,15 +391,16 @@ class FTPSSync:
 
         hash_match = True
         if verify_hash:
-            local_hash = self._sha256_local(local_file_path)
+            local_hash_value = local_hash.strip() if local_hash else self._sha256_local(local_file_path)
             remote_hash = self._sha256_remote(remote_file_path)
-            hash_match = local_hash == remote_hash
+            hash_match = local_hash_value == remote_hash
         return size_match, hash_match
 
     def check_remote_file_status(
         self,
         local_file_path: str,
         verify_hash: bool = False,
+        local_hash: str = "",
     ) -> tuple[bool, str]:
         if not self.enabled:
             return False, "FTPS выключен."
@@ -415,6 +418,7 @@ class FTPSSync:
             local_file_path,
             remote_path,
             verify_hash=verify_hash,
+            local_hash=local_hash,
         )
         verified = size_match and hash_match
         if verified:

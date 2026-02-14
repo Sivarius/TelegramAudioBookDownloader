@@ -61,6 +61,20 @@ class AppDatabase:
         )
         self._conn.execute(
             """
+            CREATE TABLE IF NOT EXISTS local_file_meta (
+                channel_id INTEGER NOT NULL,
+                message_id INTEGER NOT NULL,
+                file_path TEXT NOT NULL,
+                file_size INTEGER NOT NULL DEFAULT 0,
+                file_mtime REAL NOT NULL DEFAULT 0,
+                file_sha256 TEXT NOT NULL DEFAULT '',
+                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY (channel_id, message_id, file_path)
+            )
+            """
+        )
+        self._conn.execute(
+            """
             CREATE TABLE IF NOT EXISTS channel_preferences (
                 channel_ref TEXT PRIMARY KEY,
                 channel_id INTEGER,
@@ -186,6 +200,71 @@ class AppDatabase:
         )
         row = cur.fetchone()
         return int(row[0]) if row and row[0] else 0
+
+    def upsert_local_file_meta(
+        self,
+        channel_id: int,
+        message_id: int,
+        file_path: str,
+        file_size: int,
+        file_mtime: float,
+        file_sha256: str,
+    ) -> None:
+        self._conn.execute(
+            """
+            INSERT INTO local_file_meta(
+                channel_id, message_id, file_path, file_size, file_mtime, file_sha256, updated_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+            ON CONFLICT(channel_id, message_id, file_path) DO UPDATE SET
+                file_size = excluded.file_size,
+                file_mtime = excluded.file_mtime,
+                file_sha256 = excluded.file_sha256,
+                updated_at = CURRENT_TIMESTAMP
+            """,
+            (
+                int(channel_id),
+                int(message_id),
+                (file_path or "").strip(),
+                int(file_size),
+                float(file_mtime),
+                (file_sha256 or "").strip(),
+            ),
+        )
+        self._conn.commit()
+
+    def get_local_file_meta_by_path(self, channel_id: int, file_path: str) -> Optional[dict]:
+        normalized = (file_path or "").strip()
+        if not normalized:
+            return None
+        cur = self._conn.execute(
+            """
+            SELECT message_id, file_size, file_mtime, file_sha256, updated_at
+            FROM local_file_meta
+            WHERE channel_id = ? AND file_path = ?
+            """,
+            (int(channel_id), normalized),
+        )
+        row = cur.fetchone()
+        if not row:
+            return None
+        return {
+            "message_id": int(row[0] or 0),
+            "file_size": int(row[1] or 0),
+            "file_mtime": float(row[2] or 0.0),
+            "file_sha256": row[3] or "",
+            "updated_at": row[4] or "",
+        }
+
+    def delete_local_file_meta(self, channel_id: int, file_path: str) -> None:
+        self._conn.execute(
+            """
+            DELETE FROM local_file_meta
+            WHERE channel_id = ? AND file_path = ?
+            """,
+            (int(channel_id), (file_path or "").strip()),
+        )
+        self._conn.commit()
 
     def unmark_downloaded(self, channel_id: int, message_id: int) -> None:
         self._conn.execute(
