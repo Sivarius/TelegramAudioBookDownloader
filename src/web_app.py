@@ -161,6 +161,8 @@ worker_status = {
     "ftps_check_failed": 0,
     "ftps_check_cleaned": 0,
     "ftps_check_current_file": "",
+    "ftps_check_last_info": "",
+    "ftps_check_missing_examples": [],
     "file_progresses": {},
     "upload_file_progresses": {},
     "mode": "idle",
@@ -790,6 +792,8 @@ async def _ftps_audit_selected_channel(settings: Settings) -> tuple[bool, str]:
                 ftps_check_failed=0,
                 ftps_check_cleaned=0,
                 ftps_check_current_file="",
+                ftps_check_last_info="",
+                ftps_check_missing_examples=[],
             )
             return True, "FTPS проверка: в БД нет локальных файлов для этого канала."
 
@@ -813,6 +817,8 @@ async def _ftps_audit_selected_channel(settings: Settings) -> tuple[bool, str]:
             ftps_check_failed=0,
             ftps_check_cleaned=0,
             ftps_check_current_file="",
+            ftps_check_last_info="",
+            ftps_check_missing_examples=[],
         )
 
         await asyncio.to_thread(ftps_sync.connect)
@@ -823,6 +829,7 @@ async def _ftps_audit_selected_channel(settings: Settings) -> tuple[bool, str]:
         cleaned = 0
         missing_remote = 0
         failed = 0
+        missing_examples: list[str] = []
         for message_id, file_path in candidates:
             checked += 1
             _set_status(
@@ -834,6 +841,8 @@ async def _ftps_audit_selected_channel(settings: Settings) -> tuple[bool, str]:
                 ftps_check_failed=failed,
                 ftps_check_cleaned=cleaned,
                 ftps_check_current_file=file_path.name,
+                ftps_check_last_info="",
+                ftps_check_missing_examples=missing_examples,
             )
 
             local_hash = ""
@@ -879,6 +888,8 @@ async def _ftps_audit_selected_channel(settings: Settings) -> tuple[bool, str]:
                     ftps_check_failed=failed,
                     ftps_check_cleaned=cleaned,
                     ftps_check_current_file=file_path.name,
+                    ftps_check_last_info=f"check_failed: {exc}",
+                    ftps_check_missing_examples=missing_examples,
                 )
                 continue
             if ok:
@@ -898,6 +909,8 @@ async def _ftps_audit_selected_channel(settings: Settings) -> tuple[bool, str]:
             else:
                 if "remote_missing" in info:
                     missing_remote += 1
+                    if len(missing_examples) < 5:
+                        missing_examples.append(info)
                 else:
                     failed += 1
             _set_status(
@@ -909,8 +922,13 @@ async def _ftps_audit_selected_channel(settings: Settings) -> tuple[bool, str]:
                 ftps_check_failed=failed,
                 ftps_check_cleaned=cleaned,
                 ftps_check_current_file=file_path.name,
+                ftps_check_last_info=info,
+                ftps_check_missing_examples=missing_examples,
             )
 
+        missing_tail = ""
+        if missing_examples:
+            missing_tail = " Примеры missing: " + " | ".join(missing_examples)
         _set_status(
             ftps_check_running=False,
             ftps_check_checked=checked,
@@ -920,19 +938,22 @@ async def _ftps_audit_selected_channel(settings: Settings) -> tuple[bool, str]:
             ftps_check_failed=failed,
             ftps_check_cleaned=cleaned,
             ftps_check_current_file="",
+            ftps_check_last_info="",
+            ftps_check_missing_examples=missing_examples,
         )
 
         return (
             True,
             "FTPS проверка: "
             f"проверено {checked}, подтверждено {verified}, отсутствуют на сервере {missing_remote}, ошибок {failed}, "
-            f"локально удалено {cleaned}.",
+            f"локально удалено {cleaned}.{missing_tail}",
         )
     except Exception as exc:
         _set_status(
             ftps_check_running=False,
             ftps_check_failed=int(worker_status.get("ftps_check_failed", 0)) + 1,
             ftps_check_current_file="",
+            ftps_check_last_info=f"audit_exception: {exc}",
         )
         return False, f"FTPS проверка: ошибка ({exc})"
     finally:

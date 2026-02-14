@@ -350,6 +350,8 @@
           FTPS check: {{ status.ftps_check_checked }} / {{ status.ftps_check_total }} | подтверждено {{ status.ftps_check_verified }} | missing {{ status.ftps_check_missing }} | ошибок {{ status.ftps_check_failed }} | удалено {{ status.ftps_check_cleaned }}
         </div>
         <div id="status-ftps-check-file">FTPS текущий файл: {{ status.ftps_check_current_file }}</div>
+        <div id="status-ftps-check-last">FTPS last: {{ status.ftps_check_last_info }}</div>
+        <div id="status-ftps-check-missing">FTPS missing paths: {% if status.ftps_check_missing_examples %}{{ status.ftps_check_missing_examples|join(' | ') }}{% endif %}</div>
         <div id="status-counters">
           Скачано: {{ status.downloaded }} | Ошибок: {{ status.failed }} | Пропущено: {{ status.skipped }}
         </div>
