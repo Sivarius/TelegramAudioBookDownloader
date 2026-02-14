@@ -15,6 +15,7 @@ from aioftp.errors import StatusCodeError
 from core.models import Settings
 
 FTPS_TIMEOUT_SECONDS = 30
+FTPS_LONG_TIMEOUT_SECONDS = 180
 
 
 class FTPSSync:
@@ -66,7 +67,7 @@ class FTPSSync:
         self._loop = None
         self._loop_thread = None
 
-    def _run(self, coro, timeout: int = FTPS_TIMEOUT_SECONDS + 30):
+    def _run(self, coro, timeout: int = FTPS_LONG_TIMEOUT_SECONDS):
         if not self._loop:
             raise RuntimeError("FTPS loop is not started.")
         fut: Future = asyncio.run_coroutine_threadsafe(coro, self._loop)
@@ -192,7 +193,10 @@ class FTPSSync:
             )
             channel_remote = self.ensure_remote_dir(channel_remote)
             self._remote_channel_dir = channel_remote
-            self._remote_file_names = self._run(self._list_names_async(channel_remote), timeout=FTPS_TIMEOUT_SECONDS)
+            self._remote_file_names = self._run(
+                self._list_names_async(channel_remote),
+                timeout=FTPS_LONG_TIMEOUT_SECONDS,
+            )
 
     async def _list_names_async(self, remote_dir: str) -> set[str]:
         if not self._client:
@@ -237,7 +241,7 @@ class FTPSSync:
         last_exc: Optional[Exception] = None
         for candidate in candidates:
             try:
-                self._run(self._ensure_remote_dir_async(candidate), timeout=FTPS_TIMEOUT_SECONDS)
+                self._run(self._ensure_remote_dir_async(candidate), timeout=FTPS_LONG_TIMEOUT_SECONDS)
                 return candidate
             except Exception as exc:
                 last_exc = exc
@@ -300,7 +304,7 @@ class FTPSSync:
                             verify_hash,
                             force_upload,
                         ),
-                        timeout=max(FTPS_TIMEOUT_SECONDS + 30, 240),
+                        timeout=max(FTPS_LONG_TIMEOUT_SECONDS, 240),
                     )
                     return uploaded, reason
                 except Exception as exc:
@@ -401,7 +405,7 @@ class FTPSSync:
                 verify_hash=verify_hash,
                 local_hash=local_hash,
             ),
-            timeout=max(FTPS_TIMEOUT_SECONDS + 30, 240),
+            timeout=max(FTPS_LONG_TIMEOUT_SECONDS, 240),
         )
 
     async def _verify_remote_file_async(
@@ -448,7 +452,7 @@ class FTPSSync:
             return False, "Пустое имя файла."
         remote_path = posixpath.join(self._remote_channel_dir, file_name)
 
-        if not self._run(self._remote_exists_async(remote_path), timeout=FTPS_TIMEOUT_SECONDS):
+        if not self._run(self._remote_exists_async(remote_path), timeout=FTPS_LONG_TIMEOUT_SECONDS):
             return False, f"remote_missing; remote={remote_path}"
 
         size_match, hash_match = self.verify_remote_file(

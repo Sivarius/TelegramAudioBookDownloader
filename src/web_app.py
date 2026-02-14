@@ -772,12 +772,17 @@ async def _ftps_audit_selected_channel(settings: Settings) -> tuple[bool, str]:
             except Exception:
                 logging.exception("FTPS audit: failed to compute local hash for %s", file_path)
 
-            ok, info = await asyncio.to_thread(
-                ftps_sync.check_remote_file_status,
-                str(file_path),
-                True,
-                local_hash,
-            )
+            try:
+                ok, info = await asyncio.to_thread(
+                    ftps_sync.check_remote_file_status,
+                    str(file_path),
+                    True,
+                    local_hash,
+                )
+            except Exception as exc:
+                failed += 1
+                logging.warning("FTPS audit: check failed for %s: %s", file_path, exc)
+                continue
             if ok:
                 verified += 1
                 remote_path = ""
