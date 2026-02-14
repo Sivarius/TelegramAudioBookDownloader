@@ -341,8 +341,11 @@ class FTPSSync:
         uploaded = False
         reuploaded = False
 
+        remote_name = self._resolve_remote_name_from_listing(file_name) or file_name
+        remote_path = posixpath.join(self._remote_channel_dir, remote_name)
+
         remote_exists = False
-        if file_name in self._remote_file_names:
+        if remote_name in self._remote_file_names:
             remote_exists = True
         else:
             remote_exists = await self._remote_exists_async(remote_path)
@@ -455,17 +458,11 @@ class FTPSSync:
         file_name = os.path.basename(local_file_path)
         if not file_name:
             return False, "Пустое имя файла."
-        remote_name = file_name
-        remote_path = posixpath.join(self._remote_channel_dir, remote_name)
-
-        exists = self._run(self._remote_exists_async(remote_path), timeout=FTPS_LONG_TIMEOUT_SECONDS)
-        if not exists:
-            # Fallback for FTPS servers with inconsistent path/name encoding behavior.
-            remote_name = self._find_remote_name_by_listing(file_name) or file_name
-            remote_path = posixpath.join(self._remote_channel_dir, remote_name)
-            exists = self._run(self._remote_exists_async(remote_path), timeout=FTPS_LONG_TIMEOUT_SECONDS)
-        if not exists:
+        remote_name = self._resolve_remote_name_from_listing(file_name)
+        if not remote_name:
+            remote_path = posixpath.join(self._remote_channel_dir, file_name)
             return False, f"remote_missing; remote={remote_path}"
+        remote_path = posixpath.join(self._remote_channel_dir, remote_name)
 
         size_match, hash_match = self.verify_remote_file(
             local_file_path,
@@ -502,6 +499,22 @@ class FTPSSync:
             if self._normalize_name(name).casefold() == lower_requested:
                 return name
         return ""
+
+    def _resolve_remote_name_from_listing(self, requested_file_name: str) -> str:
+        requested_norm = self._normalize_name(requested_file_name)
+        lower_requested = requested_norm.casefold()
+
+        for name in self._remote_file_names:
+            if self._normalize_name(name) == requested_norm:
+                return name
+        for name in self._remote_file_names:
+            if self._normalize_name(name).casefold() == lower_requested:
+                return name
+
+        listed_name = self._find_remote_name_by_listing(requested_file_name)
+        if listed_name:
+            self._remote_file_names.add(listed_name)
+        return listed_name
 
     async def _remote_exists_async(self, remote_file_path: str) -> bool:
         if not self._client:
