@@ -282,6 +282,12 @@
     .hidden {
       display: none;
     }
+    .debug-only-col {
+      display: none;
+    }
+    body.debug-mode .debug-only-col {
+      display: table-cell;
+    }
     .btn {
       border: 0;
       border-radius: 8px;

@@ -456,7 +456,7 @@
               <th>size</th>
               <th>modify</th>
               <th>path</th>
-              <th>list_source</th>
+              <th class="debug-only-col">list_source</th>
             </tr>
           </thead>
           <tbody id="remote-preview-table-body">
@@ -469,7 +469,7 @@
                 <td class="mono">{{ item.size }}</td>
                 <td class="mono">{{ item.modify }}</td>
                 <td class="mono">{{ item.path }}</td>
-                <td class="mono">{{ item.list_source }}</td>
+                <td class="mono debug-only-col">{{ item.list_source }}</td>
               </tr>
               {% endfor %}
             {% else %}

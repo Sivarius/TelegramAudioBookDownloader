@@ -471,8 +471,13 @@ async function runFormAction(action) {
       }
     }
 
+    function applyDebugColumnsVisibility(enabled) {
+      document.body.classList.toggle('debug-mode', !!enabled);
+    }
+
     document.getElementById('debug-toggle').addEventListener('change', async (e) => {
       const enabled = !!e.target.checked;
+      applyDebugColumnsVisibility(enabled);
       try {
         const data = new FormData();
         data.set('enabled', enabled ? '1' : '0');
@@ -552,6 +557,7 @@ async function runFormAction(action) {
         refreshDebugLogs();
       }
     }, 2000);
+    applyDebugColumnsVisibility(document.getElementById('debug-toggle').checked);
     const form = document.querySelector('form');
     if (form) {
       form.addEventListener('submit', async (event) => {
