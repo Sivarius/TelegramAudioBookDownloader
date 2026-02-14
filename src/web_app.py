@@ -724,7 +724,12 @@ async def _ftps_audit_selected_channel(settings: Settings) -> tuple[bool, str]:
         channel = await resolve_channel_entity(client, channel_ref)
         channel_id = int(utils.get_peer_id(channel))
         channel_title = getattr(channel, "title", channel_ref)
-        channel_folder = sanitize_folder_name(channel_title)
+        state = db.get_channel_state_by_ref(channel_ref)
+        folder_raw = str(state.get("download_folder", "") or "").strip()
+        if folder_raw:
+            channel_folder = Path(folder_raw).name
+        else:
+            channel_folder = sanitize_folder_name(channel_title)
 
         records = db.list_downloads_by_channel(channel_id)
         if not records:

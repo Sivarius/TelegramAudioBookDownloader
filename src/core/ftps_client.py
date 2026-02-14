@@ -5,6 +5,7 @@ import posixpath
 import socket
 import ssl
 import threading
+import unicodedata
 from concurrent.futures import Future, TimeoutError as FutureTimeoutError
 from pathlib import PurePosixPath
 from typing import Callable, Optional
@@ -257,6 +258,10 @@ class FTPSSync:
             normalized = normalized.replace("//", "/")
         return normalized
 
+    @staticmethod
+    def _normalize_name(value: str) -> str:
+        return unicodedata.normalize("NFC", (value or "").strip())
+
     async def _ensure_remote_dir_async(self, path: str) -> None:
         if not self._client:
             raise RuntimeError("FTPS is not connected.")
@@ -450,9 +455,16 @@ class FTPSSync:
         file_name = os.path.basename(local_file_path)
         if not file_name:
             return False, "Пустое имя файла."
-        remote_path = posixpath.join(self._remote_channel_dir, file_name)
+        remote_name = file_name
+        remote_path = posixpath.join(self._remote_channel_dir, remote_name)
 
-        if not self._run(self._remote_exists_async(remote_path), timeout=FTPS_LONG_TIMEOUT_SECONDS):
+        exists = self._run(self._remote_exists_async(remote_path), timeout=FTPS_LONG_TIMEOUT_SECONDS)
+        if not exists:
+            # Fallback for FTPS servers with inconsistent path/name encoding behavior.
+            remote_name = self._find_remote_name_by_listing(file_name) or file_name
+            remote_path = posixpath.join(self._remote_channel_dir, remote_name)
+            exists = self._run(self._remote_exists_async(remote_path), timeout=FTPS_LONG_TIMEOUT_SECONDS)
+        if not exists:
             return False, f"remote_missing; remote={remote_path}"
 
         size_match, hash_match = self.verify_remote_file(
@@ -468,6 +480,28 @@ class FTPSSync:
             verified,
             f"remote={remote_path}; size_match={size_match}; hash_match={hash_match}; verified={verified}",
         )
+
+    def _find_remote_name_by_listing(self, requested_file_name: str) -> str:
+        if not self._remote_channel_dir:
+            return ""
+        try:
+            listed = self._run(
+                self._list_names_async(self._remote_channel_dir),
+                timeout=FTPS_LONG_TIMEOUT_SECONDS,
+            )
+        except Exception:
+            return ""
+        if not listed:
+            return ""
+        requested_norm = self._normalize_name(requested_file_name)
+        lower_requested = requested_norm.casefold()
+        for name in listed:
+            if self._normalize_name(name) == requested_norm:
+                return name
+        for name in listed:
+            if self._normalize_name(name).casefold() == lower_requested:
+                return name
+        return ""
 
     async def _remote_exists_async(self, remote_file_path: str) -> bool:
         if not self._client:
