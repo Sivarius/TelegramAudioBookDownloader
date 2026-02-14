@@ -807,7 +807,8 @@ async def run_downloader(
     live_mode: bool = True,
 ) -> None:
     db = AppDatabase(db_path)
-    remote_sync: Optional[object] = _build_remote_sync(settings)
+    defer_ftps_batch_upload = bool(settings.use_ftps and not settings.use_sftp and not live_mode)
+    remote_sync: Optional[object] = None if defer_ftps_batch_upload else _build_remote_sync(settings)
     client = None
     try:
         settings.download_dir.mkdir(parents=True, exist_ok=True)
@@ -875,6 +876,21 @@ async def run_downloader(
         )
 
         if not live_mode:
+            if defer_ftps_batch_upload:
+                if status_hook:
+                    status_hook(
+                        {
+                            "event": "upload_started",
+                            "message": "FTPS: запуск пакетной автозагрузки после скачивания.",
+                            "concurrency": max(1, int(getattr(settings, "ftps_upload_concurrency", 1))),
+                        }
+                    )
+                await run_remote_uploader(
+                    settings=settings,
+                    db_path=db_path,
+                    status_hook=status_hook,
+                    stop_requested=stop_requested,
+                )
             logging.info("One-shot mode complete. Live listener disabled.")
             return
 
