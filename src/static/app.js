@@ -117,6 +117,10 @@ async function runFormAction(action) {
         ftpsClass = s.ftps_available ? 'run' : 'stop';
       }
       document.getElementById('status-ftps').innerHTML = `FTPS: <span class="${ftpsClass}">${ftpsText}</span>`;
+      const ftpsCheckRunning = !!s.ftps_check_running;
+      document.getElementById('status-ftps-check-state').innerHTML = `FTPS проверка: <span class="${ftpsCheckRunning ? 'run' : 'stop'}">${ftpsCheckRunning ? 'выполняется' : 'не запущена'}</span>`;
+      document.getElementById('status-ftps-check-counters').textContent = `FTPS check: ${s.ftps_check_checked || 0} / ${s.ftps_check_total || 0} | подтверждено ${s.ftps_check_verified || 0} | missing ${s.ftps_check_missing || 0} | ошибок ${s.ftps_check_failed || 0} | удалено ${s.ftps_check_cleaned || 0}`;
+      document.getElementById('status-ftps-check-file').textContent = `FTPS текущий файл: ${s.ftps_check_current_file || ''}`;
       document.getElementById('status-counters').textContent = `Скачано: ${s.downloaded || 0} | Ошибок: ${s.failed || 0} | Пропущено: ${s.skipped || 0}`;
       document.getElementById('status-sftp-counters').textContent = `Upload: загружено ${s.sftp_uploaded || 0} | пропущено ${s.sftp_skipped || 0} | ошибок ${s.sftp_failed || 0}`;
       document.getElementById('status-concurrency').textContent = `Параллельность: ${s.current_concurrency || 1} / ${s.configured_concurrency || 1}`;

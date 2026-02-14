@@ -153,6 +153,14 @@ worker_status = {
     "upload_progress_total": 0,
     "upload_progress_speed_bps": 0.0,
     "upload_progress_eta_sec": 0.0,
+    "ftps_check_running": False,
+    "ftps_check_checked": 0,
+    "ftps_check_total": 0,
+    "ftps_check_verified": 0,
+    "ftps_check_missing": 0,
+    "ftps_check_failed": 0,
+    "ftps_check_cleaned": 0,
+    "ftps_check_current_file": "",
     "file_progresses": {},
     "upload_file_progresses": {},
     "mode": "idle",
@@ -773,7 +781,39 @@ async def _ftps_audit_selected_channel(settings: Settings) -> tuple[bool, str]:
 
         records = db.list_downloads_by_channel(channel_id)
         if not records:
+            _set_status(
+                ftps_check_running=False,
+                ftps_check_checked=0,
+                ftps_check_total=0,
+                ftps_check_verified=0,
+                ftps_check_missing=0,
+                ftps_check_failed=0,
+                ftps_check_cleaned=0,
+                ftps_check_current_file="",
+            )
             return True, "FTPS проверка: в БД нет локальных файлов для этого канала."
+
+        candidates: list[tuple[int, Path]] = []
+        for record in records:
+            file_path_raw = (record.get("file_path") or "").strip()
+            message_id = int(record.get("message_id") or 0)
+            if not file_path_raw or message_id <= 0:
+                continue
+            file_path = Path(file_path_raw)
+            if not file_path.exists() or not file_path.is_file():
+                continue
+            candidates.append((message_id, file_path))
+
+        _set_status(
+            ftps_check_running=True,
+            ftps_check_checked=0,
+            ftps_check_total=len(candidates),
+            ftps_check_verified=0,
+            ftps_check_missing=0,
+            ftps_check_failed=0,
+            ftps_check_cleaned=0,
+            ftps_check_current_file="",
+        )
 
         await asyncio.to_thread(ftps_sync.connect)
         await asyncio.to_thread(ftps_sync.prepare_channel_dir, channel_folder)
@@ -783,15 +823,18 @@ async def _ftps_audit_selected_channel(settings: Settings) -> tuple[bool, str]:
         cleaned = 0
         missing_remote = 0
         failed = 0
-        for record in records:
-            file_path_raw = (record.get("file_path") or "").strip()
-            message_id = int(record.get("message_id") or 0)
-            if not file_path_raw or message_id <= 0:
-                continue
-            file_path = Path(file_path_raw)
-            if not file_path.exists() or not file_path.is_file():
-                continue
+        for message_id, file_path in candidates:
             checked += 1
+            _set_status(
+                ftps_check_running=True,
+                ftps_check_checked=checked,
+                ftps_check_total=len(candidates),
+                ftps_check_verified=verified,
+                ftps_check_missing=missing_remote,
+                ftps_check_failed=failed,
+                ftps_check_cleaned=cleaned,
+                ftps_check_current_file=file_path.name,
+            )
 
             local_hash = ""
             try:
@@ -827,6 +870,16 @@ async def _ftps_audit_selected_channel(settings: Settings) -> tuple[bool, str]:
             except Exception as exc:
                 failed += 1
                 logging.warning("FTPS audit: check failed for %s: %s", file_path, exc)
+                _set_status(
+                    ftps_check_running=True,
+                    ftps_check_checked=checked,
+                    ftps_check_total=len(candidates),
+                    ftps_check_verified=verified,
+                    ftps_check_missing=missing_remote,
+                    ftps_check_failed=failed,
+                    ftps_check_cleaned=cleaned,
+                    ftps_check_current_file=file_path.name,
+                )
                 continue
             if ok:
                 verified += 1
@@ -847,6 +900,27 @@ async def _ftps_audit_selected_channel(settings: Settings) -> tuple[bool, str]:
                     missing_remote += 1
                 else:
                     failed += 1
+            _set_status(
+                ftps_check_running=True,
+                ftps_check_checked=checked,
+                ftps_check_total=len(candidates),
+                ftps_check_verified=verified,
+                ftps_check_missing=missing_remote,
+                ftps_check_failed=failed,
+                ftps_check_cleaned=cleaned,
+                ftps_check_current_file=file_path.name,
+            )
+
+        _set_status(
+            ftps_check_running=False,
+            ftps_check_checked=checked,
+            ftps_check_total=len(candidates),
+            ftps_check_verified=verified,
+            ftps_check_missing=missing_remote,
+            ftps_check_failed=failed,
+            ftps_check_cleaned=cleaned,
+            ftps_check_current_file="",
+        )
 
         return (
             True,
@@ -855,6 +929,11 @@ async def _ftps_audit_selected_channel(settings: Settings) -> tuple[bool, str]:
             f"локально удалено {cleaned}.",
         )
     except Exception as exc:
+        _set_status(
+            ftps_check_running=False,
+            ftps_check_failed=int(worker_status.get("ftps_check_failed", 0)) + 1,
+            ftps_check_current_file="",
+        )
         return False, f"FTPS проверка: ошибка ({exc})"
     finally:
         try:

@@ -343,6 +343,13 @@
             <span class="stop">не используется</span>
           {% endif %}
         </div>
+        <div id="status-ftps-check-state">
+          FTPS проверка: {% if status.ftps_check_running %}<span class="run">выполняется</span>{% else %}<span class="stop">не запущена</span>{% endif %}
+        </div>
+        <div id="status-ftps-check-counters">
+          FTPS check: {{ status.ftps_check_checked }} / {{ status.ftps_check_total }} | подтверждено {{ status.ftps_check_verified }} | missing {{ status.ftps_check_missing }} | ошибок {{ status.ftps_check_failed }} | удалено {{ status.ftps_check_cleaned }}
+        </div>
+        <div id="status-ftps-check-file">FTPS текущий файл: {{ status.ftps_check_current_file }}</div>
         <div id="status-counters">
           Скачано: {{ status.downloaded }} | Ошибок: {{ status.failed }} | Пропущено: {{ status.skipped }}
         </div>
