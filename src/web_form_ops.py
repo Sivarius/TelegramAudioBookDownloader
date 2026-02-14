@@ -56,6 +56,7 @@ def _load_saved_form(db_path: Path) -> dict:
             "ftps_security_mode": db.get_setting("FTPS_SECURITY_MODE") or "explicit",
             "ftps_upload_concurrency": db.get_setting("FTPS_UPLOAD_CONCURRENCY") or "2",
             "cleanup_local_after_ftps": (db.get_setting("CLEANUP_LOCAL_AFTER_FTPS") or "0") == "1",
+            "ftps_verify_hash": (db.get_setting("FTPS_VERIFY_HASH") or "1") == "1",
             "download_new": False,
             "remember_me": (db.get_setting("REMEMBER_ME") or "1") != "0",
             "enable_periodic_checks": (db.get_setting("ENABLE_PERIODIC_CHECKS") or "0") == "1",
@@ -100,6 +101,7 @@ def _form_from_request(db_path: Path) -> dict:
         "ftps_security_mode": request.form.get("ftps_security_mode", saved["ftps_security_mode"]).strip().lower(),
         "ftps_upload_concurrency": request.form.get("ftps_upload_concurrency", saved["ftps_upload_concurrency"]).strip(),
         "cleanup_local_after_ftps": request.form.get("cleanup_local_after_ftps") == "on",
+        "ftps_verify_hash": request.form.get("ftps_verify_hash") == "on",
         "download_new": request.form.get("download_new") == "on",
         "remember_me": request.form.get("remember_me") == "on",
         "enable_periodic_checks": request.form.get("enable_periodic_checks") == "on",
@@ -176,6 +178,7 @@ def _build_settings(form: dict, require_channel: bool = True) -> Settings:
         ftps_security_mode=ftps_security_mode,
         ftps_upload_concurrency=ftps_upload_concurrency,
         cleanup_local_after_ftps=bool(form["cleanup_local_after_ftps"]),
+        ftps_verify_hash=bool(form["ftps_verify_hash"]),
     )
 
 

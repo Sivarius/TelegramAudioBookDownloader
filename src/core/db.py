@@ -153,6 +153,7 @@ class AppDatabase:
         self.set_setting("FTPS_PASSIVE_MODE", "1" if settings.ftps_passive_mode else "0")
         self.set_setting("FTPS_SECURITY_MODE", settings.ftps_security_mode)
         self.set_setting("FTPS_UPLOAD_CONCURRENCY", str(settings.ftps_upload_concurrency))
+        self.set_setting("FTPS_VERIFY_HASH", "1" if settings.ftps_verify_hash else "0")
         self.set_setting(
             "CLEANUP_LOCAL_AFTER_FTPS",
             "1" if settings.cleanup_local_after_ftps else "0",

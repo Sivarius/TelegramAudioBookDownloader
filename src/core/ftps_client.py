@@ -160,7 +160,8 @@ class FTPSSync:
             return (
                 True,
                 "FTPS: подключение установлено "
-                f"({tls_mode}; mode={transfer_mode}; security={secure_mode}; encoding={encoding}). "
+                f"({tls_mode}; mode={transfer_mode}; security={secure_mode}; encoding={encoding}; "
+                f"hash_verify={'on' if self.settings.ftps_verify_hash else 'off'}). "
                 f"Каталог доступен: {base_remote}",
             )
         except ssl.SSLCertVerificationError as exc:
@@ -578,7 +579,8 @@ class FTPSSync:
         size_match = int(remote_size) == int(local_size)
 
         hash_match = True
-        if verify_hash:
+        should_verify_hash = bool(verify_hash and self.settings.ftps_verify_hash)
+        if should_verify_hash:
             local_hash_value = local_hash.strip() if local_hash else self._sha256_local(local_file_path)
             remote_hash, streamed_size = await self._sha256_remote_async(remote_file_path)
             hash_match = local_hash_value == remote_hash

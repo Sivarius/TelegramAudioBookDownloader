@@ -160,6 +160,7 @@ def load_settings(db: AppDatabase) -> Settings:
     cleanup_local_after_ftps = _to_bool(
         _env_or_db("CLEANUP_LOCAL_AFTER_FTPS", db) or "0"
     )
+    ftps_verify_hash = _to_bool(_env_or_db("FTPS_VERIFY_HASH", db) or "1")
     try:
         ftps_port = int(ftps_port_raw)
     except ValueError as exc:
@@ -201,4 +202,5 @@ def load_settings(db: AppDatabase) -> Settings:
         ftps_security_mode=ftps_security_mode,
         ftps_upload_concurrency=ftps_upload_concurrency,
         cleanup_local_after_ftps=cleanup_local_after_ftps,
+        ftps_verify_hash=ftps_verify_hash,
     )

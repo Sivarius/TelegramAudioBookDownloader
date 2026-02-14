@@ -33,3 +33,4 @@ class Settings:
     ftps_security_mode: str
     ftps_upload_concurrency: int
     cleanup_local_after_ftps: bool
+    ftps_verify_hash: bool = True
