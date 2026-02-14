@@ -14,12 +14,16 @@ if errorlevel 1 (
   exit /b 1
 )
 
-echo [2/4] Creating virtual environment (.venv)...
-python -m venv .venv
-if errorlevel 1 (
-  echo Failed to create .venv
-  if "%NO_PAUSE%"=="0" pause
-  exit /b 1
+echo [2/4] Preparing virtual environment (.venv)...
+if exist ".venv\Scripts\python.exe" (
+  echo .venv already exists.
+) else (
+  python -m venv .venv
+  if errorlevel 1 (
+    echo Failed to create .venv
+    if "%NO_PAUSE%"=="0" pause
+    exit /b 1
+  )
 )
 
 echo [3/4] Upgrading pip...
