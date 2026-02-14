@@ -873,6 +873,51 @@ async def _ftps_audit_selected_channel(settings: Settings) -> tuple[bool, str]:
     await client.connect()
     db = AppDatabase(DB_PATH)
     ftps_sync = FTPSSync(settings)
+
+    async def _check_ftps_with_retry(
+        file_path: Path,
+        local_hash: str,
+        channel_folder_name: str,
+        attempts: int = 3,
+    ) -> tuple[bool, str]:
+        last_exc: Exception | None = None
+        for attempt in range(1, attempts + 1):
+            try:
+                return await asyncio.to_thread(
+                    ftps_sync.check_remote_file_status,
+                    str(file_path),
+                    True,
+                    local_hash,
+                )
+            except Exception as exc:
+                last_exc = exc
+                err = str(exc).lower()
+                recoverable = (
+                    "timed out" in err
+                    or "timeout" in err
+                    or "ssl handshake" in err
+                    or "broken pipe" in err
+                    or "eof occurred" in err
+                )
+                if attempt >= attempts or not recoverable:
+                    raise
+                logging.warning(
+                    "FTPS audit: retrying check for %s attempt=%s/%s reason=%s",
+                    file_path,
+                    attempt,
+                    attempts,
+                    exc,
+                )
+                try:
+                    await asyncio.to_thread(ftps_sync.close)
+                except Exception:
+                    pass
+                await asyncio.sleep(min(4, attempt))
+                await asyncio.to_thread(ftps_sync.connect)
+                await asyncio.to_thread(ftps_sync.prepare_channel_dir, channel_folder_name)
+        if last_exc:
+            raise last_exc
+        raise RuntimeError("FTPS check failed for unknown reason")
     try:
         if not await client.is_user_authorized():
             return False, "Сессия не авторизована. Сначала нажмите Авторизоваться."
@@ -975,12 +1020,7 @@ async def _ftps_audit_selected_channel(settings: Settings) -> tuple[bool, str]:
                 logging.exception("FTPS audit: failed to compute local hash for %s", file_path)
 
             try:
-                ok, info = await asyncio.to_thread(
-                    ftps_sync.check_remote_file_status,
-                    str(file_path),
-                    True,
-                    local_hash,
-                )
+                ok, info = await _check_ftps_with_retry(file_path, local_hash, channel_folder)
             except Exception as exc:
                 failed += 1
                 logging.warning("FTPS audit: check failed for %s: %s", file_path, exc)
