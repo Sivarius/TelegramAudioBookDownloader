@@ -589,6 +589,7 @@ class FTPSSync:
         remote_name = self._resolve_remote_name_from_listing(file_name)
         if not remote_name:
             candidates = self._fuzzy_remote_candidates(file_name)
+            present_mismatch_info = ""
             for candidate_name in candidates[:15]:
                 candidate_path = posixpath.join(self._remote_channel_dir, candidate_name)
                 try:
@@ -607,6 +608,11 @@ class FTPSSync:
                         True,
                         f"remote={candidate_path}; size_match={size_match}; hash_match={hash_match}; "
                         "verified=True; matched_by=fuzzy",
+                    )
+                if not present_mismatch_info:
+                    present_mismatch_info = (
+                        f"remote_present_mismatch; remote={candidate_path}; "
+                        f"size_match={size_match}; hash_match={hash_match}; matched_by=fuzzy"
                     )
             for sibling_dir in self._sibling_channel_dirs():
                 sibling_candidates = self._fuzzy_remote_candidates_in_dir(sibling_dir, file_name)
@@ -628,7 +634,14 @@ class FTPSSync:
                             f"remote={candidate_path}; size_match={size_match}; hash_match={hash_match}; "
                             "verified=True; matched_by=sibling_dir_fuzzy",
                         )
+                    if not present_mismatch_info:
+                        present_mismatch_info = (
+                            f"remote_present_mismatch; remote={candidate_path}; "
+                            f"size_match={size_match}; hash_match={hash_match}; matched_by=sibling_dir_fuzzy"
+                        )
             remote_path = posixpath.join(self._remote_channel_dir, file_name)
+            if present_mismatch_info:
+                return False, present_mismatch_info
             if candidates:
                 sample_path = posixpath.join(self._remote_channel_dir, candidates[0])
                 return (
