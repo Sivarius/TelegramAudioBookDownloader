@@ -55,6 +55,9 @@ setup_logging()
 
 debug_log_lock = threading.Lock()
 debug_log_buffer: deque[str] = deque(maxlen=400)
+debug_mode_enabled = False
+debug_file_handler: Optional[logging.Handler] = None
+debug_file_path = DB_PATH.parent / "debug.log.txt"
 
 
 class InMemoryLogHandler(logging.Handler):
@@ -67,17 +70,54 @@ class InMemoryLogHandler(logging.Handler):
             debug_log_buffer.append(msg)
 
 
+class SuppressDebugLogsAccessFilter(logging.Filter):
+    def filter(self, record: logging.LogRecord) -> bool:
+        message = record.getMessage()
+        if "/debug_logs" in message:
+            return False
+        return True
+
+
 def _setup_debug_log_handler() -> None:
     root = logging.getLogger()
     if any(isinstance(h, InMemoryLogHandler) for h in root.handlers):
         return
     handler = InMemoryLogHandler()
-    handler.setLevel(logging.INFO)
+    handler.setLevel(logging.DEBUG)
     handler.setFormatter(logging.Formatter("%(asctime)s | %(levelname)s | %(message)s"))
     root.addHandler(handler)
+    werkzeug_logger = logging.getLogger("werkzeug")
+    if not any(isinstance(f, SuppressDebugLogsAccessFilter) for f in werkzeug_logger.filters):
+        werkzeug_logger.addFilter(SuppressDebugLogsAccessFilter())
 
 
 _setup_debug_log_handler()
+
+
+def _set_debug_mode(enabled: bool) -> None:
+    global debug_mode_enabled, debug_file_handler
+    root = logging.getLogger()
+    debug_mode_enabled = bool(enabled)
+    if debug_mode_enabled:
+        if debug_file_handler is None:
+            debug_file_path.parent.mkdir(parents=True, exist_ok=True)
+            file_handler = logging.FileHandler(debug_file_path, encoding="utf-8")
+            file_handler.setLevel(logging.DEBUG)
+            file_handler.setFormatter(
+                logging.Formatter("%(asctime)s | %(levelname)s | %(name)s | %(message)s")
+            )
+            root.addHandler(file_handler)
+            debug_file_handler = file_handler
+        root.setLevel(logging.DEBUG)
+    else:
+        if debug_file_handler is not None:
+            try:
+                root.removeHandler(debug_file_handler)
+                debug_file_handler.close()
+            except Exception:
+                pass
+            debug_file_handler = None
+        root.setLevel(logging.INFO)
 
 worker_lock = threading.Lock()
 worker_thread: Optional[threading.Thread] = None
@@ -1273,6 +1313,7 @@ def _register_basic_routes() -> None:
             "get_status_version": lambda: status_version,
             "debug_log_lock": debug_log_lock,
             "debug_log_buffer": debug_log_buffer,
+            "set_debug_mode": _set_debug_mode,
             "form_from_request": _form_from_request,
             "store_enable_periodic_checks": _store_enable_periodic_checks,
             "build_settings": _build_settings,

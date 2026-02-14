@@ -43,6 +43,12 @@ def register_basic_routes(app, deps: dict) -> None:
             lines = list(debug_log_buffer)
         return jsonify({"lines": lines, "count": len(lines)})
 
+    @app.post("/debug_mode")
+    def debug_mode():
+        enabled = request.form.get("enabled", "0") == "1"
+        deps["set_debug_mode"](enabled)
+        return jsonify({"ok": True, "enabled": enabled})
+
     @app.post("/preview")
     def refresh_preview():
         form = deps["form_from_request"]()

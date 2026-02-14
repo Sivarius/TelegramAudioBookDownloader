@@ -404,12 +404,20 @@
         }
         const data = await response.json();
         pre.textContent = (data.lines || []).join('\n') || 'No logs yet.';
-        box.scrollTop = box.scrollHeight;
       } catch (_) {
       }
     }
 
-    document.getElementById('debug-toggle').addEventListener('change', refreshDebugLogs);
+    document.getElementById('debug-toggle').addEventListener('change', async (e) => {
+      const enabled = !!e.target.checked;
+      try {
+        const data = new FormData();
+        data.set('enabled', enabled ? '1' : '0');
+        await fetch('/debug_mode', { method: 'POST', body: data });
+      } catch (_) {
+      }
+      refreshDebugLogs();
+    });
 
     async function applyDownloadNewRange(enabled) {
       const fromInput = document.getElementById('from_index');
@@ -477,7 +485,9 @@
     });
 
     setInterval(() => {
-      refreshDebugLogs();
+      if (document.getElementById('debug-toggle').checked) {
+        refreshDebugLogs();
+      }
     }, 2000);
     connectStatusStream();
     refreshDebugLogs();
