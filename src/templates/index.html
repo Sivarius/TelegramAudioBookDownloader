@@ -456,6 +456,7 @@
               <th>size</th>
               <th>modify</th>
               <th>path</th>
+              <th>list_source</th>
             </tr>
           </thead>
           <tbody id="remote-preview-table-body">
@@ -468,11 +469,12 @@
                 <td class="mono">{{ item.size }}</td>
                 <td class="mono">{{ item.modify }}</td>
                 <td class="mono">{{ item.path }}</td>
+                <td class="mono">{{ item.list_source }}</td>
               </tr>
               {% endfor %}
             {% else %}
               <tr>
-                <td colspan="6">Нажмите "Предпросмотр FTPS", чтобы посмотреть файлы на удалённом каталоге.</td>
+                <td colspan="7">Нажмите "Предпросмотр FTPS", чтобы посмотреть файлы на удалённом каталоге.</td>
               </tr>
             {% endif %}
           </tbody>

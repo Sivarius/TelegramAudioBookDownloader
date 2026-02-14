@@ -769,6 +769,7 @@ async def _fetch_ftps_preview(settings: Settings, limit: int = 300) -> tuple[boo
                     "size": item.get("size", ""),
                     "modify": item.get("modify", ""),
                     "path": item.get("path", ""),
+                    "list_source": item.get("list_source", ""),
                 }
             )
 
@@ -782,9 +783,11 @@ async def _fetch_ftps_preview(settings: Settings, limit: int = 300) -> tuple[boo
                         "size": item.get("size", ""),
                         "modify": item.get("modify", ""),
                         "path": item.get("path", ""),
+                        "list_source": item.get("list_source", ""),
                     }
                 )
             if not rows:
+                root_items = await asyncio.to_thread(ftps_sync.list_remote_entries, ".", 50)
                 rows = [
                     {
                         "scope": "info",
@@ -793,6 +796,7 @@ async def _fetch_ftps_preview(settings: Settings, limit: int = 300) -> tuple[boo
                         "size": "",
                         "modify": "",
                         "path": channel_remote,
+                        "list_source": "",
                     },
                     {
                         "scope": "info",
@@ -801,6 +805,16 @@ async def _fetch_ftps_preview(settings: Settings, limit: int = 300) -> tuple[boo
                         "size": "",
                         "modify": "",
                         "path": base_remote,
+                        "list_source": "",
+                    },
+                    {
+                        "scope": "info",
+                        "name": f"cwd entries: {len(root_items)}",
+                        "type": "info",
+                        "size": "",
+                        "modify": "",
+                        "path": ".",
+                        "list_source": ".",
                     },
                 ]
             return (

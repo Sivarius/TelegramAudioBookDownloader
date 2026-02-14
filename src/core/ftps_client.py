@@ -705,13 +705,38 @@ class FTPSSync:
         normalized = self._normalize_remote_dir(remote_dir)
         if not normalized:
             normalized = "/"
+        candidates: list[str] = []
+        for item in (normalized, normalized.lstrip("/"), f"/{normalized.lstrip('/')}"):
+            value = self._normalize_remote_dir(item)
+            if not value:
+                continue
+            if value not in candidates:
+                candidates.append(value)
+        if "." not in candidates:
+            candidates.append(".")
+
+        rows: list[dict] = []
+        used = ""
         with self._io_lock:
-            rows = self._run(
-                self._list_dir_detailed_async(normalized),
-                timeout=FTPS_LONG_TIMEOUT_SECONDS,
-            )
+            for candidate in candidates:
+                current = self._run(
+                    self._list_dir_detailed_async(candidate),
+                    timeout=FTPS_LONG_TIMEOUT_SECONDS,
+                )
+                if current:
+                    rows = current
+                    used = candidate
+                    break
+            if not rows:
+                rows = self._run(
+                    self._list_dir_detailed_async(candidates[0]),
+                    timeout=FTPS_LONG_TIMEOUT_SECONDS,
+                )
+                used = candidates[0]
         rows = rows[: max(1, int(limit))]
         rows.sort(key=lambda item: (str(item.get("type", "")) != "dir", str(item.get("name", "")).casefold()))
+        for row in rows:
+            row["list_source"] = used
         return rows
 
     def _resolve_remote_name_from_listing(self, requested_file_name: str) -> str:
