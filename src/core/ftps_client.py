@@ -24,6 +24,7 @@ class FTPSSync:
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
         self._client: Optional[aioftp.Client] = None
+        self._base_remote_dir = ""
         self._remote_channel_dir = ""
         self._remote_file_names: set[str] = set()
         self._io_lock = threading.Lock()
@@ -188,6 +189,7 @@ class FTPSSync:
 
         with self._io_lock:
             base_remote = self.ensure_remote_dir((self.settings.ftps_remote_dir or "/").strip() or "/")
+            self._base_remote_dir = base_remote
             channel_remote = (
                 posixpath.join(base_remote.rstrip("/"), channel_folder)
                 if base_remote != "/"
@@ -210,6 +212,18 @@ class FTPSSync:
         except Exception:
             return set()
         return names
+
+    async def _list_dir_entries_async(self, remote_dir: str) -> list[tuple[str, str]]:
+        if not self._client:
+            return []
+        entries: list[tuple[str, str]] = []
+        try:
+            async for path, info in self._client.list(PurePosixPath(remote_dir)):
+                item_type = str((info or {}).get("type", "")).strip().lower()
+                entries.append((path.name, item_type))
+        except Exception:
+            return []
+        return entries
 
     @staticmethod
     def _is_recoverable_error(exc: Exception) -> bool:
@@ -494,6 +508,26 @@ class FTPSSync:
                         f"remote={candidate_path}; size_match={size_match}; hash_match={hash_match}; "
                         "verified=True; matched_by=fuzzy",
                     )
+            for sibling_dir in self._sibling_channel_dirs():
+                sibling_candidates = self._fuzzy_remote_candidates_in_dir(sibling_dir, file_name)
+                for candidate_name in sibling_candidates[:8]:
+                    candidate_path = posixpath.join(sibling_dir, candidate_name)
+                    try:
+                        size_match, hash_match = self.verify_remote_file(
+                            local_file_path,
+                            candidate_path,
+                            verify_hash=verify_hash,
+                            local_hash=local_hash,
+                        )
+                    except Exception:
+                        continue
+                    verified = size_match and hash_match
+                    if verified:
+                        return (
+                            True,
+                            f"remote={candidate_path}; size_match={size_match}; hash_match={hash_match}; "
+                            "verified=True; matched_by=sibling_dir_fuzzy",
+                        )
             remote_path = posixpath.join(self._remote_channel_dir, file_name)
             if candidates:
                 sample_path = posixpath.join(self._remote_channel_dir, candidates[0])
@@ -582,6 +616,66 @@ class FTPSSync:
                 ranked.append((score, name))
         ranked.sort(key=lambda item: (-item[0], self._normalize_name(item[1]).casefold()))
         return [name for _, name in ranked]
+
+    def _fuzzy_remote_candidates_in_dir(self, remote_dir: str, requested_file_name: str) -> list[str]:
+        if not remote_dir:
+            return []
+        listed: set[str] = set()
+        try:
+            listed = self._run(
+                self._list_names_async(remote_dir),
+                timeout=FTPS_LONG_TIMEOUT_SECONDS,
+            )
+        except Exception:
+            listed = set()
+        if not listed:
+            return []
+        req_norm = self._normalize_name(requested_file_name)
+        req_lower = req_norm.casefold()
+        req_ext = os.path.splitext(req_lower)[1]
+        chapter_token = self._extract_chapter_token(requested_file_name)
+        ranked: list[tuple[int, str]] = []
+        for name in listed:
+            norm = self._normalize_name(name)
+            lower = norm.casefold()
+            if req_ext and not lower.endswith(req_ext):
+                continue
+            score = 0
+            if chapter_token:
+                token_re = rf"(^|[^0-9])0*{re.escape(chapter_token)}([^0-9]|$)"
+                if re.search(token_re, lower):
+                    score += 10
+                if lower.startswith(chapter_token) or lower.startswith(chapter_token.zfill(4)):
+                    score += 6
+            if lower[:16] == req_lower[:16]:
+                score += 4
+            if score > 0:
+                ranked.append((score, name))
+        ranked.sort(key=lambda item: (-item[0], self._normalize_name(item[1]).casefold()))
+        return [name for _, name in ranked]
+
+    def _sibling_channel_dirs(self) -> list[str]:
+        base_dir = (self._base_remote_dir or "").strip()
+        if not base_dir:
+            return []
+        entries: list[tuple[str, str]] = []
+        try:
+            entries = self._run(
+                self._list_dir_entries_async(base_dir),
+                timeout=FTPS_LONG_TIMEOUT_SECONDS,
+            )
+        except Exception:
+            entries = []
+        dirs: list[str] = []
+        for name, item_type in entries:
+            if item_type != "dir":
+                continue
+            if base_dir == "/":
+                dirs.append(f"/{name}")
+            else:
+                dirs.append(posixpath.join(base_dir.rstrip("/"), name))
+        current = (self._remote_channel_dir or "").rstrip("/")
+        return [item for item in dirs if item.rstrip("/") != current]
 
     def _resolve_remote_name_from_listing(self, requested_file_name: str) -> str:
         requested_norm = self._normalize_name(requested_file_name)
