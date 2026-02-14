@@ -2,6 +2,7 @@ import asyncio
 import hashlib
 import os
 import posixpath
+import re
 import socket
 import ssl
 import threading
@@ -262,6 +263,19 @@ class FTPSSync:
     def _normalize_name(value: str) -> str:
         return unicodedata.normalize("NFC", (value or "").strip())
 
+    @staticmethod
+    def _extract_chapter_token(file_name: str) -> str:
+        raw = (file_name or "").strip()
+        if not raw:
+            return ""
+        leading = re.match(r"^(\d{1,6})", raw)
+        if leading:
+            return leading.group(1).lstrip("0") or "0"
+        any_digits = re.search(r"(\d{1,6})", raw)
+        if any_digits:
+            return any_digits.group(1).lstrip("0") or "0"
+        return ""
+
     async def _ensure_remote_dir_async(self, path: str) -> None:
         if not self._client:
             raise RuntimeError("FTPS is not connected.")
@@ -460,7 +474,33 @@ class FTPSSync:
             return False, "Пустое имя файла."
         remote_name = self._resolve_remote_name_from_listing(file_name)
         if not remote_name:
+            candidates = self._fuzzy_remote_candidates(file_name)
+            for candidate_name in candidates[:15]:
+                candidate_path = posixpath.join(self._remote_channel_dir, candidate_name)
+                try:
+                    size_match, hash_match = self.verify_remote_file(
+                        local_file_path,
+                        candidate_path,
+                        verify_hash=verify_hash,
+                        local_hash=local_hash,
+                    )
+                except Exception:
+                    continue
+                verified = size_match and hash_match
+                if verified:
+                    self._remote_file_names.add(candidate_name)
+                    return (
+                        True,
+                        f"remote={candidate_path}; size_match={size_match}; hash_match={hash_match}; "
+                        "verified=True; matched_by=fuzzy",
+                    )
             remote_path = posixpath.join(self._remote_channel_dir, file_name)
+            if candidates:
+                sample_path = posixpath.join(self._remote_channel_dir, candidates[0])
+                return (
+                    False,
+                    f"remote_missing; remote={remote_path}; fuzzy_candidates={len(candidates)}; sample={sample_path}",
+                )
             return False, f"remote_missing; remote={remote_path}"
         remote_path = posixpath.join(self._remote_channel_dir, remote_name)
 
@@ -499,6 +539,49 @@ class FTPSSync:
             if self._normalize_name(name).casefold() == lower_requested:
                 return name
         return ""
+
+    def _get_remote_listing_names(self) -> set[str]:
+        listed: set[str] = set()
+        if not self._remote_channel_dir:
+            return listed
+        try:
+            listed = self._run(
+                self._list_names_async(self._remote_channel_dir),
+                timeout=FTPS_LONG_TIMEOUT_SECONDS,
+            )
+        except Exception:
+            listed = set()
+        if listed:
+            self._remote_file_names.update(listed)
+        return set(self._remote_file_names)
+
+    def _fuzzy_remote_candidates(self, requested_file_name: str) -> list[str]:
+        listed = self._get_remote_listing_names()
+        if not listed:
+            return []
+        req_norm = self._normalize_name(requested_file_name)
+        req_lower = req_norm.casefold()
+        req_ext = os.path.splitext(req_lower)[1]
+        chapter_token = self._extract_chapter_token(requested_file_name)
+        ranked: list[tuple[int, str]] = []
+        for name in listed:
+            norm = self._normalize_name(name)
+            lower = norm.casefold()
+            if req_ext and not lower.endswith(req_ext):
+                continue
+            score = 0
+            if chapter_token:
+                token_re = rf"(^|[^0-9])0*{re.escape(chapter_token)}([^0-9]|$)"
+                if re.search(token_re, lower):
+                    score += 10
+                if lower.startswith(chapter_token) or lower.startswith(chapter_token.zfill(4)):
+                    score += 6
+            if lower[:16] == req_lower[:16]:
+                score += 4
+            if score > 0:
+                ranked.append((score, name))
+        ranked.sort(key=lambda item: (-item[0], self._normalize_name(item[1]).casefold()))
+        return [name for _, name in ranked]
 
     def _resolve_remote_name_from_listing(self, requested_file_name: str) -> str:
         requested_norm = self._normalize_name(requested_file_name)
