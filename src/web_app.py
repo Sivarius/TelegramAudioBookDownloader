@@ -16,7 +16,7 @@ from flask import Flask, render_template, request
 from telethon import utils
 from telethon.errors import PhoneCodeExpiredError, PhoneCodeInvalidError, SessionPasswordNeededError
 
-from core.config import setup_logging
+from core.config import sanitize_folder_name, setup_logging
 from core.db import AppDatabase
 from core.downloader import run_downloader, run_remote_uploader
 from core.ftps_client import FTPSSync
