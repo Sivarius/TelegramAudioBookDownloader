@@ -386,15 +386,9 @@
         <div id="status-file">Последний файл: {{ status.last_file }}</div>
         <div id="status-updated">Обновлено: {{ status.updated_at }}</div>
 
-        {% if message %}
-        <div>Результат: {{ message }}</div>
-        {% endif %}
-        {% if need_code %}
-        <div>Требуется код подтверждения. Введите поле "Код из Telegram" и нажмите "Авторизоваться" снова.</div>
-        {% endif %}
-        {% if need_password %}
-        <div>Требуется пароль 2FA. Введите поле "Пароль 2FA" и нажмите "Авторизоваться" снова.</div>
-        {% endif %}
+        <div id="result-message">{% if message %}Результат: {{ message }}{% endif %}</div>
+        <div id="need-code-hint">{% if need_code %}Требуется код подтверждения. Введите поле "Код из Telegram" и нажмите "Авторизоваться" снова.{% endif %}</div>
+        <div id="need-password-hint">{% if need_password %}Требуется пароль 2FA. Введите поле "Пароль 2FA" и нажмите "Авторизоваться" снова.{% endif %}</div>
       </div>
 
       <p class="note">Статус скачивания обновляется через серверный поток (SSE) без постоянного polling.</p>
@@ -419,7 +413,7 @@
               <th>Дата</th>
             </tr>
           </thead>
-          <tbody>
+          <tbody id="preview-table-body">
             {% if preview %}
               {% for item in preview %}
               <tr>

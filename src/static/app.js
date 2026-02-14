@@ -1,8 +1,54 @@
-﻿function submitControlAction(action) {
+async function runFormAction(action) {
+      const form = document.querySelector('form');
+      if (!form) return;
+      const data = new FormData(form);
+      try {
+        const response = await fetch(action, {
+          method: 'POST',
+          body: data,
+          cache: 'no-store',
+          headers: { 'X-Requested-With': 'fetch' },
+        });
+        const contentType = String(response.headers.get('content-type') || '').toLowerCase();
+        const text = await response.text();
+        if (contentType.includes('text/html')) {
+          const doc = new DOMParser().parseFromString(text, 'text/html');
+          const result = doc.querySelector('#result-message');
+          const needCode = doc.querySelector('#need-code-hint');
+          const needPassword = doc.querySelector('#need-password-hint');
+          const previewBody = doc.querySelector('#preview-table-body');
+          if (result) {
+            const target = document.getElementById('result-message');
+            if (target) target.innerHTML = result.innerHTML;
+          }
+          if (needCode) {
+            const target = document.getElementById('need-code-hint');
+            if (target) target.innerHTML = needCode.innerHTML;
+          }
+          if (needPassword) {
+            const target = document.getElementById('need-password-hint');
+            if (target) target.innerHTML = needPassword.innerHTML;
+          }
+          if (previewBody) {
+            const target = document.getElementById('preview-table-body');
+            if (target) target.innerHTML = previewBody.innerHTML;
+          }
+          await refreshDebugLogs();
+          return;
+        }
+        const target = document.getElementById('result-message');
+        if (target) target.textContent = text || '';
+      } catch (e) {
+        const target = document.getElementById('result-message');
+        if (target) target.textContent = `Результат: ошибка запроса (${e})`;
+      }
+    }
+
+    function submitControlAction(action) {
       const form = document.querySelector('form');
       if (!form) return;
       form.setAttribute('action', action);
-      form.submit();
+      runFormAction(action);
     }
 
     function updateRunButtons(s) {
@@ -489,6 +535,19 @@
         refreshDebugLogs();
       }
     }, 2000);
+    const form = document.querySelector('form');
+    if (form) {
+      form.addEventListener('submit', async (event) => {
+        event.preventDefault();
+        const submitter = event.submitter;
+        const action =
+          (submitter && submitter.getAttribute('formaction')) ||
+          form.getAttribute('action') ||
+          '/authorize';
+        await runFormAction(action);
+      });
+    }
     connectStatusStream();
     refreshDebugLogs();
+
 
