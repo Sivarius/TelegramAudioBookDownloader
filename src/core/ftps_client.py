@@ -1,4 +1,5 @@
 import asyncio
+import ftplib
 import hashlib
 import os
 import posixpath
@@ -244,6 +245,85 @@ class FTPSSync:
         except Exception:
             return []
         return entries
+
+    def _connect_ftplib_explicit(self) -> ftplib.FTP_TLS:
+        if self.settings.ftps_security_mode != "explicit":
+            raise RuntimeError("ftplib fallback supports explicit FTPS mode only.")
+        context = self._build_ssl_context()
+        encoding = (self.settings.ftps_encoding or "auto").strip().lower()
+        if encoding == "auto":
+            encoding = "utf-8"
+        client = ftplib.FTP_TLS(timeout=FTPS_TIMEOUT_SECONDS, context=context, encoding=encoding)
+        client.connect(host=self.settings.ftps_host, port=self.settings.ftps_port, timeout=FTPS_TIMEOUT_SECONDS)
+        client.auth()
+        client.login(user=self.settings.ftps_username, passwd=self.settings.ftps_password or "")
+        client.prot_p()
+        client.set_pasv(True)
+        return client
+
+    def _list_dir_detailed_ftplib_sync(self, remote_dir: str, limit: int = 500) -> tuple[list[dict], str]:
+        try:
+            client = self._connect_ftplib_explicit()
+        except Exception:
+            return [], ""
+        try:
+            rows: list[dict] = []
+            try:
+                for name, facts in client.mlsd(remote_dir):
+                    rows.append(
+                        {
+                            "name": str(name),
+                            "path": posixpath.join(remote_dir.rstrip("/"), str(name))
+                            if remote_dir not in {"", ".", "/"}
+                            else (f"/{name}" if remote_dir == "/" else str(name)),
+                            "type": str((facts or {}).get("type", "")),
+                            "size": str((facts or {}).get("size", "")),
+                            "modify": str((facts or {}).get("modify", "")),
+                        }
+                    )
+                    if len(rows) >= max(1, int(limit)):
+                        break
+                return rows, "ftplib:mlsd"
+            except Exception:
+                pass
+
+            try:
+                names = client.nlst(remote_dir)
+            except Exception:
+                names = []
+            for raw in names:
+                value = str(raw).strip()
+                if not value:
+                    continue
+                name = posixpath.basename(value.rstrip("/"))
+                if name in {".", "..", ""}:
+                    continue
+                path = value
+                if not path.startswith("/"):
+                    if remote_dir in {"", ".", "/"}:
+                        path = f"/{name}" if remote_dir == "/" else name
+                    else:
+                        path = posixpath.join(remote_dir.rstrip("/"), name)
+                rows.append(
+                    {
+                        "name": name,
+                        "path": path,
+                        "type": "",
+                        "size": "",
+                        "modify": "",
+                    }
+                )
+                if len(rows) >= max(1, int(limit)):
+                    break
+            return rows, ("ftplib:nlst" if rows else "")
+        finally:
+            try:
+                client.quit()
+            except Exception:
+                try:
+                    client.close()
+                except Exception:
+                    pass
 
     @staticmethod
     def _is_recoverable_error(exc: Exception) -> bool:
@@ -605,6 +685,9 @@ class FTPSSync:
             )
         except Exception:
             listed = set()
+        if not listed:
+            fallback_rows, _ = self._list_dir_detailed_ftplib_sync(self._remote_channel_dir, limit=1000)
+            listed = {str(item.get("name", "")).strip() for item in fallback_rows if str(item.get("name", "")).strip()}
         if listed:
             self._remote_file_names.update(listed)
         return set(self._remote_file_names)
@@ -649,6 +732,9 @@ class FTPSSync:
         except Exception:
             listed = set()
         if not listed:
+            fallback_rows, _ = self._list_dir_detailed_ftplib_sync(remote_dir, limit=1000)
+            listed = {str(item.get("name", "")).strip() for item in fallback_rows if str(item.get("name", "")).strip()}
+        if not listed:
             return []
         req_norm = self._normalize_name(requested_file_name)
         req_lower = req_norm.casefold()
@@ -686,6 +772,17 @@ class FTPSSync:
             )
         except Exception:
             entries = []
+        if not entries:
+            fallback_rows, source = self._list_dir_detailed_ftplib_sync(base_dir, limit=500)
+            if source:
+                entries = [
+                    (
+                        str(item.get("name", "")),
+                        str(item.get("type", "")) if str(item.get("type", "")).strip() else "dir",
+                    )
+                    for item in fallback_rows
+                    if str(item.get("name", "")).strip()
+                ]
         dirs: list[str] = []
         for name, item_type in entries:
             if item_type != "dir":
@@ -723,16 +820,26 @@ class FTPSSync:
                     self._list_dir_detailed_async(candidate),
                     timeout=FTPS_LONG_TIMEOUT_SECONDS,
                 )
+                source = "aioftp:list"
+                if not current:
+                    current, fb_source = self._list_dir_detailed_ftplib_sync(candidate, limit=max(200, limit))
+                    if fb_source:
+                        source = fb_source
                 if current:
                     rows = current
-                    used = candidate
+                    used = f"{candidate} [{source}]"
                     break
             if not rows:
                 rows = self._run(
                     self._list_dir_detailed_async(candidates[0]),
                     timeout=FTPS_LONG_TIMEOUT_SECONDS,
                 )
-                used = candidates[0]
+                source = "aioftp:list"
+                if not rows:
+                    rows, fb_source = self._list_dir_detailed_ftplib_sync(candidates[0], limit=max(200, limit))
+                    if fb_source:
+                        source = fb_source
+                used = f"{candidates[0]} [{source}]"
         rows = rows[: max(1, int(limit))]
         rows.sort(key=lambda item: (str(item.get("type", "")) != "dir", str(item.get("name", "")).casefold()))
         for row in rows:
