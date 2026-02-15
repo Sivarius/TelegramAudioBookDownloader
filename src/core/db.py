@@ -92,6 +92,20 @@ class AppDatabase:
             )
             """
         )
+        self._conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS remote_listing_cache (
+                channel_ref TEXT NOT NULL,
+                transport TEXT NOT NULL,
+                file_name TEXT NOT NULL,
+                remote_path TEXT NOT NULL,
+                item_type TEXT,
+                item_size TEXT,
+                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY (channel_ref, transport, file_name)
+            )
+            """
+        )
         self._ensure_channel_preferences_columns()
         self._conn.commit()
 
@@ -656,7 +670,72 @@ class AppDatabase:
 
         self._conn.execute("DELETE FROM channel_preferences WHERE channel_ref = ?", (ref,))
         self._conn.execute("DELETE FROM channel_state WHERE channel_ref = ?", (ref,))
+        self._conn.execute("DELETE FROM remote_listing_cache WHERE channel_ref = ?", (ref,))
         if channel_id > 0:
             self._conn.execute("DELETE FROM downloads WHERE channel_id = ?", (channel_id,))
             self._conn.execute("DELETE FROM remote_uploads WHERE channel_id = ?", (channel_id,))
         self._conn.commit()
+
+    def replace_remote_listing_cache(
+        self,
+        channel_ref: str,
+        transport: str,
+        items: list[dict],
+    ) -> None:
+        ref = (channel_ref or "").strip()
+        tr = (transport or "").strip().upper() or "REMOTE"
+        if not ref:
+            return
+        self._conn.execute(
+            "DELETE FROM remote_listing_cache WHERE channel_ref = ? AND transport = ?",
+            (ref, tr),
+        )
+        for item in items or []:
+            file_name = str(item.get("name", "")).strip()
+            remote_path = str(item.get("path", "")).strip()
+            if not file_name or not remote_path:
+                continue
+            self._conn.execute(
+                """
+                INSERT INTO remote_listing_cache(
+                    channel_ref, transport, file_name, remote_path, item_type, item_size, updated_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                ON CONFLICT(channel_ref, transport, file_name) DO UPDATE SET
+                    remote_path = excluded.remote_path,
+                    item_type = excluded.item_type,
+                    item_size = excluded.item_size,
+                    updated_at = CURRENT_TIMESTAMP
+                """,
+                (
+                    ref,
+                    tr,
+                    file_name,
+                    remote_path,
+                    str(item.get("type", "")).strip(),
+                    str(item.get("size", "")).strip(),
+                ),
+            )
+        self._conn.commit()
+
+    def get_remote_cached_path(
+        self,
+        channel_ref: str,
+        transport: str,
+        file_name: str,
+    ) -> str:
+        ref = (channel_ref or "").strip()
+        tr = (transport or "").strip().upper() or "REMOTE"
+        name = (file_name or "").strip()
+        if not ref or not name:
+            return ""
+        cur = self._conn.execute(
+            """
+            SELECT remote_path
+            FROM remote_listing_cache
+            WHERE channel_ref = ? AND transport = ? AND file_name = ?
+            """,
+            (ref, tr, name),
+        )
+        row = cur.fetchone()
+        return (row[0] or "").strip() if row else ""

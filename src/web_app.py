@@ -878,6 +878,7 @@ async def _ftps_audit_selected_channel(settings: Settings) -> tuple[bool, str]:
         file_path: Path,
         local_hash: str,
         channel_folder_name: str,
+        remote_path_hint: str = "",
         attempts: int = 3,
     ) -> tuple[bool, str]:
         last_exc: Exception | None = None
@@ -888,6 +889,7 @@ async def _ftps_audit_selected_channel(settings: Settings) -> tuple[bool, str]:
                     str(file_path),
                     True,
                     local_hash,
+                    remote_path_hint,
                 )
             except Exception as exc:
                 last_exc = exc
@@ -973,6 +975,15 @@ async def _ftps_audit_selected_channel(settings: Settings) -> tuple[bool, str]:
 
         await asyncio.to_thread(ftps_sync.connect)
         await asyncio.to_thread(ftps_sync.prepare_channel_dir, channel_folder)
+        try:
+            listing_rows = await asyncio.to_thread(
+                ftps_sync.list_remote_entries_ftplib,
+                ftps_sync.remote_channel_dir or "/",
+                5000,
+            )
+            db.replace_remote_listing_cache(channel_ref, "FTPS", listing_rows)
+        except Exception:
+            logging.exception("FTPS audit: failed to cache remote listing in DB")
 
         checked = 0
         verified = 0
@@ -1020,7 +1031,13 @@ async def _ftps_audit_selected_channel(settings: Settings) -> tuple[bool, str]:
                 logging.exception("FTPS audit: failed to compute local hash for %s", file_path)
 
             try:
-                ok, info = await _check_ftps_with_retry(file_path, local_hash, channel_folder)
+                remote_path_hint = db.get_remote_cached_path(channel_ref, "FTPS", file_path.name)
+                ok, info = await _check_ftps_with_retry(
+                    file_path,
+                    local_hash,
+                    channel_folder,
+                    remote_path_hint,
+                )
             except Exception as exc:
                 failed += 1
                 logging.warning("FTPS audit: check failed for %s: %s", file_path, exc)

@@ -406,6 +406,9 @@ async def run_remote_uploader(
             last_exc: Optional[Exception] = None
             uploaded = False
             info = ""
+            remote_hint = ""
+            if str(getattr(sync_client, "name", "")).upper() == "FTPS":
+                remote_hint = db.get_remote_cached_path(settings.channel, "FTPS", file_path.name)
             for attempt in range(1, max_retries + 1):
                 if stop_requested and stop_requested():
                     raise asyncio.CancelledError()
@@ -443,6 +446,8 @@ async def run_remote_uploader(
                                     cleanup_local_after_remote
                                     and str(getattr(sync_client, "name", "")).upper() != "FTPS"
                                 ),
+                                "",
+                                remote_hint,
                             )
                             if recovered:
                                 uploaded = True
@@ -528,6 +533,16 @@ async def run_remote_uploader(
         if concurrency <= 1:
             await asyncio.to_thread(remote_sync.connect)
             await asyncio.to_thread(remote_sync.prepare_channel_dir, channel_folder)
+            if str(getattr(remote_sync, "name", "")).upper() == "FTPS":
+                try:
+                    listing_rows = await asyncio.to_thread(
+                        remote_sync.list_remote_entries_ftplib,
+                        getattr(remote_sync, "remote_channel_dir", "") or "/",
+                        5000,
+                    )
+                    db.replace_remote_listing_cache(settings.channel, "FTPS", listing_rows)
+                except Exception:
+                    logging.exception("FTPS upload: failed to cache remote listing in DB")
             if status_hook:
                 status_hook(
                     {
@@ -560,6 +575,27 @@ async def run_remote_uploader(
             finally:
                 await asyncio.to_thread(remote_sync.close)
         else:
+            if str(getattr(remote_sync, "name", "")).upper() == "FTPS":
+                temp_client = type(remote_sync)(settings)
+                try:
+                    await asyncio.wait_for(asyncio.to_thread(temp_client.connect), timeout=30)
+                    await asyncio.wait_for(
+                        asyncio.to_thread(temp_client.prepare_channel_dir, channel_folder),
+                        timeout=30,
+                    )
+                    listing_rows = await asyncio.to_thread(
+                        temp_client.list_remote_entries_ftplib,
+                        getattr(temp_client, "remote_channel_dir", "") or "/",
+                        5000,
+                    )
+                    db.replace_remote_listing_cache(settings.channel, "FTPS", listing_rows)
+                except Exception:
+                    logging.exception("FTPS upload: failed to cache remote listing in DB")
+                finally:
+                    try:
+                        await asyncio.to_thread(temp_client.close)
+                    except Exception:
+                        pass
             queue: asyncio.Queue[Path] = asyncio.Queue()
             for path in files:
                 queue.put_nowait(path)
@@ -632,6 +668,7 @@ async def run_remote_uploader(
                             str(file_path),
                             True,
                             file_hash,
+                            db.get_remote_cached_path(settings.channel, "FTPS", file_path.name),
                         )
                         if ok:
                             try:

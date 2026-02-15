@@ -326,6 +326,18 @@ class FTPSSync:
                 except Exception:
                     pass
 
+    def list_remote_entries_ftplib(self, remote_dir: str, limit: int = 500) -> list[dict]:
+        normalized = self._normalize_remote_dir(remote_dir)
+        if not normalized:
+            normalized = "/"
+        rows, source = self._list_dir_detailed_ftplib_sync(normalized, limit=max(1, int(limit)))
+        if not rows:
+            return []
+        rows.sort(key=lambda item: (str(item.get("type", "")) != "dir", str(item.get("name", "")).casefold()))
+        for row in rows:
+            row["list_source"] = f"{normalized} [{source or 'ftplib'}]"
+        return rows
+
     @staticmethod
     def _is_recoverable_error(exc: Exception) -> bool:
         if isinstance(exc, (ssl.SSLEOFError, BrokenPipeError, TimeoutError, socket.timeout, ConnectionError)):
@@ -597,6 +609,7 @@ class FTPSSync:
         local_file_path: str,
         verify_hash: bool = False,
         local_hash: str = "",
+        remote_path_hint: str = "",
     ) -> tuple[bool, str]:
         if not self.enabled:
             return False, "FTPS выключен."
@@ -607,6 +620,42 @@ class FTPSSync:
         file_name = os.path.basename(local_file_path)
         if not file_name:
             return False, "Пустое имя файла."
+
+        hinted_path = self._normalize_remote_dir(remote_path_hint)
+        if hinted_path:
+            try:
+                size_match, hash_match = self.verify_remote_file(
+                    local_file_path,
+                    hinted_path,
+                    verify_hash=verify_hash,
+                    local_hash=local_hash,
+                )
+                verified = size_match and hash_match
+                if verified:
+                    self._remote_file_names.add(file_name)
+                    return (
+                        True,
+                        f"remote={hinted_path}; size_match={size_match}; hash_match={hash_match}; "
+                        "verified=True; matched_by=db_cache",
+                    )
+                return (
+                    False,
+                    f"remote_present_mismatch; remote={hinted_path}; "
+                    f"size_match={size_match}; hash_match={hash_match}; matched_by=db_cache",
+                )
+            except Exception:
+                ok_fb, info_fb = self._check_remote_file_status_ftplib(
+                    local_file_path,
+                    hinted_path,
+                    verify_hash=verify_hash,
+                    local_hash=local_hash,
+                )
+                if ok_fb:
+                    self._remote_file_names.add(file_name)
+                    return True, f"{info_fb}; matched_by=db_cache_ftplib_fallback"
+                if "remote_present_mismatch" in info_fb:
+                    return False, f"{info_fb}; matched_by=db_cache_ftplib_fallback"
+
         remote_name = self._resolve_remote_name_from_listing(file_name)
         if not remote_name:
             # Listing can be unavailable on some FTPS servers even when direct file
@@ -796,6 +845,65 @@ class FTPSSync:
             f"remote_hash={remote_hash_dbg[:12] if remote_hash_dbg else ''}; "
             f"verified={verified}",
         )
+
+    def _check_remote_file_status_ftplib(
+        self,
+        local_file_path: str,
+        remote_path: str,
+        verify_hash: bool = False,
+        local_hash: str = "",
+    ) -> tuple[bool, str]:
+        try:
+            client = self._connect_ftplib_explicit()
+        except Exception as exc:
+            return False, f"remote_missing; remote={remote_path}; ftplib_connect_failed={exc}"
+        try:
+            local_size = os.path.getsize(local_file_path)
+            remote_size = -1
+            try:
+                size_value = client.size(remote_path)
+                if size_value is not None:
+                    remote_size = int(size_value)
+            except Exception:
+                remote_size = -1
+            if remote_size < 0:
+                return False, f"remote_missing; remote={remote_path}"
+            size_match = int(remote_size) == int(local_size)
+            hash_match = True
+            should_verify_hash = bool(verify_hash and self.settings.ftps_verify_hash)
+            if should_verify_hash and size_match:
+                local_hash_value = local_hash.strip() if local_hash else self._sha256_local(local_file_path)
+                digest = hashlib.sha256()
+
+                def _consume(data: bytes) -> None:
+                    digest.update(data)
+
+                client.retrbinary(f"RETR {remote_path}", _consume, blocksize=1024 * 256)
+                remote_hash = digest.hexdigest()
+                hash_match = local_hash_value == remote_hash
+            verified = size_match and hash_match
+            if verified:
+                return (
+                    True,
+                    f"remote={remote_path}; size_match={size_match}; hash_match={hash_match}; verified=True",
+                )
+            return (
+                False,
+                f"remote_present_mismatch; remote={remote_path}; size_match={size_match}; hash_match={hash_match}",
+            )
+        except Exception as exc:
+            text = str(exc).lower()
+            if "550" in text or "not found" in text:
+                return False, f"remote_missing; remote={remote_path}"
+            return False, f"remote_missing; remote={remote_path}; ftplib_check_failed={exc}"
+        finally:
+            try:
+                client.quit()
+            except Exception:
+                try:
+                    client.close()
+                except Exception:
+                    pass
 
     def _find_remote_name_by_listing(self, requested_file_name: str) -> str:
         if not self._remote_channel_dir:
