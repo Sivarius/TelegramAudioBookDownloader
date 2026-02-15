@@ -19,6 +19,7 @@ from core.models import Settings
 
 FTPS_TIMEOUT_SECONDS = 30
 FTPS_LONG_TIMEOUT_SECONDS = 180
+FTPS_LIST_TIMEOUT_SECONDS = 10
 
 
 class FTPSSync:
@@ -31,6 +32,7 @@ class FTPSSync:
         self._io_lock = threading.Lock()
         self._loop: Optional[asyncio.AbstractEventLoop] = None
         self._loop_thread: Optional[threading.Thread] = None
+        self._ftplib_client: Optional[ftplib.FTP_TLS] = None
 
     @property
     def enabled(self) -> bool:
@@ -131,6 +133,7 @@ class FTPSSync:
                 self._run(self._close_async(), timeout=10)
             except Exception:
                 pass
+        self._close_ftplib_client()
         self._client = None
         self._stop_loop()
 
@@ -199,10 +202,22 @@ class FTPSSync:
             )
             channel_remote = self.ensure_remote_dir(channel_remote)
             self._remote_channel_dir = channel_remote
-            self._remote_file_names = self._run(
-                self._list_names_async(channel_remote),
-                timeout=FTPS_LONG_TIMEOUT_SECONDS,
-            )
+            names: set[str] = set()
+            fallback_rows, _ = self._list_dir_detailed_ftplib_sync(channel_remote, limit=10000)
+            names = {
+                str(item.get("name", "")).strip()
+                for item in fallback_rows
+                if str(item.get("name", "")).strip()
+            }
+            if not names:
+                try:
+                    names = self._run(
+                        self._list_names_async(channel_remote),
+                        timeout=FTPS_LIST_TIMEOUT_SECONDS,
+                    )
+                except Exception:
+                    names = set()
+            self._remote_file_names = names
 
     async def _list_names_async(self, remote_dir: str) -> set[str]:
         if not self._client:
@@ -261,6 +276,28 @@ class FTPSSync:
         client.prot_p()
         client.set_pasv(True)
         return client
+
+    def _close_ftplib_client(self) -> None:
+        if not self._ftplib_client:
+            return
+        try:
+            self._ftplib_client.quit()
+        except Exception:
+            try:
+                self._ftplib_client.close()
+            except Exception:
+                pass
+        self._ftplib_client = None
+
+    def _get_ftplib_client(self) -> ftplib.FTP_TLS:
+        if self._ftplib_client:
+            try:
+                self._ftplib_client.voidcmd("NOOP")
+                return self._ftplib_client
+            except Exception:
+                self._close_ftplib_client()
+        self._ftplib_client = self._connect_ftplib_explicit()
+        return self._ftplib_client
 
     def _list_dir_detailed_ftplib_sync(self, remote_dir: str, limit: int = 500) -> tuple[list[dict], str]:
         try:
@@ -803,6 +840,17 @@ class FTPSSync:
                 return False, present_mismatch_info
             if candidates:
                 sample_path = posixpath.join(self._remote_channel_dir, candidates[0])
+                ok_fb, info_fb = self._check_remote_file_status_ftplib(
+                    local_file_path,
+                    sample_path,
+                    verify_hash=verify_hash,
+                    local_hash=local_hash,
+                )
+                if ok_fb:
+                    self._remote_file_names.add(candidates[0])
+                    return True, f"{info_fb}; matched_by=fuzzy_ftplib_fallback"
+                if "remote_present_mismatch" in info_fb:
+                    return False, f"{info_fb}; matched_by=fuzzy_ftplib_fallback"
                 return (
                     False,
                     f"remote_missing; remote={remote_path}; fuzzy_candidates={len(candidates)}; sample={sample_path}",
@@ -854,7 +902,7 @@ class FTPSSync:
         local_hash: str = "",
     ) -> tuple[bool, str]:
         try:
-            client = self._connect_ftplib_explicit()
+            client = self._get_ftplib_client()
         except Exception as exc:
             return False, f"remote_missing; remote={remote_path}; ftplib_connect_failed={exc}"
         try:
@@ -892,18 +940,11 @@ class FTPSSync:
                 f"remote_present_mismatch; remote={remote_path}; size_match={size_match}; hash_match={hash_match}",
             )
         except Exception as exc:
+            self._close_ftplib_client()
             text = str(exc).lower()
             if "550" in text or "not found" in text:
                 return False, f"remote_missing; remote={remote_path}"
             return False, f"remote_missing; remote={remote_path}; ftplib_check_failed={exc}"
-        finally:
-            try:
-                client.quit()
-            except Exception:
-                try:
-                    client.close()
-                except Exception:
-                    pass
 
     def _find_remote_name_by_listing(self, requested_file_name: str) -> str:
         if not self._remote_channel_dir:
@@ -911,7 +952,7 @@ class FTPSSync:
         try:
             listed = self._run(
                 self._list_names_async(self._remote_channel_dir),
-                timeout=FTPS_LONG_TIMEOUT_SECONDS,
+                timeout=FTPS_LIST_TIMEOUT_SECONDS,
             )
         except Exception:
             return ""
@@ -928,13 +969,15 @@ class FTPSSync:
         return ""
 
     def _get_remote_listing_names(self) -> set[str]:
+        if self._remote_file_names:
+            return set(self._remote_file_names)
         listed: set[str] = set()
         if not self._remote_channel_dir:
             return listed
         try:
             listed = self._run(
                 self._list_names_async(self._remote_channel_dir),
-                timeout=FTPS_LONG_TIMEOUT_SECONDS,
+                timeout=FTPS_LIST_TIMEOUT_SECONDS,
             )
         except Exception:
             listed = set()
@@ -980,7 +1023,7 @@ class FTPSSync:
         try:
             listed = self._run(
                 self._list_names_async(remote_dir),
-                timeout=FTPS_LONG_TIMEOUT_SECONDS,
+                timeout=FTPS_LIST_TIMEOUT_SECONDS,
             )
         except Exception:
             listed = set()
@@ -1021,7 +1064,7 @@ class FTPSSync:
         try:
             entries = self._run(
                 self._list_dir_entries_async(base_dir),
-                timeout=FTPS_LONG_TIMEOUT_SECONDS,
+                timeout=FTPS_LIST_TIMEOUT_SECONDS,
             )
         except Exception:
             entries = []
@@ -1069,10 +1112,13 @@ class FTPSSync:
         used = ""
         with self._io_lock:
             for candidate in candidates:
-                current = self._run(
-                    self._list_dir_detailed_async(candidate),
-                    timeout=FTPS_LONG_TIMEOUT_SECONDS,
-                )
+                try:
+                    current = self._run(
+                        self._list_dir_detailed_async(candidate),
+                        timeout=FTPS_LIST_TIMEOUT_SECONDS,
+                    )
+                except Exception:
+                    current = []
                 source = "aioftp:list"
                 if not current:
                     current, fb_source = self._list_dir_detailed_ftplib_sync(candidate, limit=max(200, limit))
@@ -1083,10 +1129,13 @@ class FTPSSync:
                     used = f"{candidate} [{source}]"
                     break
             if not rows:
-                rows = self._run(
-                    self._list_dir_detailed_async(candidates[0]),
-                    timeout=FTPS_LONG_TIMEOUT_SECONDS,
-                )
+                try:
+                    rows = self._run(
+                        self._list_dir_detailed_async(candidates[0]),
+                        timeout=FTPS_LIST_TIMEOUT_SECONDS,
+                    )
+                except Exception:
+                    rows = []
                 source = "aioftp:list"
                 if not rows:
                     rows, fb_source = self._list_dir_detailed_ftplib_sync(candidates[0], limit=max(200, limit))
@@ -1129,9 +1178,42 @@ class FTPSSync:
     async def _remote_size_async(self, remote_file_path: str) -> int:
         if not self._client:
             raise RuntimeError("FTPS не подключен.")
-        stat = await self._client.stat(PurePosixPath(remote_file_path))
-        size_raw = stat.get("size") or stat.get("st_size") or 0
-        return int(size_raw)
+        try:
+            stat = await self._client.stat(PurePosixPath(remote_file_path))
+            size_raw = stat.get("size") or stat.get("st_size") or 0
+            return int(size_raw)
+        except Exception as exc:
+            if not self._is_recoverable_stat_error(exc):
+                raise
+            return await asyncio.to_thread(self._remote_size_ftplib_sync, remote_file_path)
+
+    def _remote_size_ftplib_sync(self, remote_file_path: str) -> int:
+        try:
+            client = self._get_ftplib_client()
+        except Exception as exc:
+            raise RuntimeError(f"ftplib connect failed: {exc}") from exc
+        try:
+            size_value = client.size(remote_file_path)
+            if size_value is None:
+                return 0
+            return int(size_value)
+        except Exception:
+            self._close_ftplib_client()
+            raise
+
+    @staticmethod
+    def _is_recoverable_stat_error(exc: Exception) -> bool:
+        text = str(exc).lower()
+        if isinstance(exc, IndexError):
+            return True
+        if isinstance(exc, (TimeoutError, socket.timeout, ConnectionError)):
+            return True
+        return (
+            "mlst" in text
+            or "mlsd" in text
+            or "list index out of range" in text
+            or "timed out" in text
+        )
 
     @staticmethod
     def _sha256_local(path: str) -> str:
