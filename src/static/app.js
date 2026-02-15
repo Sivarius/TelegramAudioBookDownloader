@@ -559,14 +559,27 @@ async function runFormAction(action) {
     }, 2000);
     applyDebugColumnsVisibility(document.getElementById('debug-toggle').checked);
     const form = document.querySelector('form');
+    let lastClickedFormAction = null;
     if (form) {
+      const actionButtons = form.querySelectorAll('button[type="submit"][formaction]');
+      actionButtons.forEach((button) => {
+        button.addEventListener('click', async (event) => {
+          event.preventDefault();
+          const action = button.getAttribute('formaction') || form.getAttribute('action') || '/authorize';
+          lastClickedFormAction = action;
+          await runFormAction(action);
+        });
+      });
+
       form.addEventListener('submit', async (event) => {
         event.preventDefault();
         const submitter = event.submitter;
         const action =
           (submitter && submitter.getAttribute('formaction')) ||
+          lastClickedFormAction ||
           form.getAttribute('action') ||
           '/authorize';
+        lastClickedFormAction = null;
         await runFormAction(action);
       });
     }
