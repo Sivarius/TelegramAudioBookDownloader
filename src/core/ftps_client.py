@@ -609,6 +609,53 @@ class FTPSSync:
             return False, "Пустое имя файла."
         remote_name = self._resolve_remote_name_from_listing(file_name)
         if not remote_name:
+            # Listing can be unavailable on some FTPS servers even when direct file
+            # stat/stream works. Try exact path before declaring remote_missing.
+            direct_path = posixpath.join(self._remote_channel_dir, file_name)
+            try:
+                size_match, hash_match = self.verify_remote_file(
+                    local_file_path,
+                    direct_path,
+                    verify_hash=verify_hash,
+                    local_hash=local_hash,
+                )
+                local_hash_dbg = local_hash.strip() if local_hash else ""
+                remote_hash_dbg = ""
+                if verify_hash and size_match and not hash_match:
+                    forced_local_hash = self._sha256_local(local_file_path)
+                    size_match, hash_match = self.verify_remote_file(
+                        local_file_path,
+                        direct_path,
+                        verify_hash=True,
+                        local_hash=forced_local_hash,
+                    )
+                    local_hash_dbg = forced_local_hash
+                    try:
+                        remote_hash_dbg, _ = self._run(
+                            self._sha256_remote_async(direct_path),
+                            timeout=max(FTPS_LONG_TIMEOUT_SECONDS, 240),
+                        )
+                    except Exception:
+                        remote_hash_dbg = ""
+                verified = size_match and hash_match
+                if verified:
+                    self._remote_file_names.add(file_name)
+                    return (
+                        True,
+                        f"remote={direct_path}; size_match={size_match}; hash_match={hash_match}; "
+                        "verified=True; matched_by=direct_path",
+                    )
+                return (
+                    False,
+                    f"remote_present_mismatch; remote={direct_path}; "
+                    f"size_match={size_match}; hash_match={hash_match}; "
+                    f"local_hash={local_hash_dbg[:12] if local_hash_dbg else ''}; "
+                    f"remote_hash={remote_hash_dbg[:12] if remote_hash_dbg else ''}; "
+                    "matched_by=direct_path",
+                )
+            except Exception:
+                pass
+
             candidates = self._fuzzy_remote_candidates(file_name)
             present_mismatch_info = ""
             for candidate_name in candidates[:15]:
