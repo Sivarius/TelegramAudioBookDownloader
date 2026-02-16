@@ -1,0 +1,80 @@
+      <div class="status">
+        <div class="status-head">
+          <div class="status-line">Статус: <span id="run-state" class="{% if status.running %}run{% else %}stop{% endif %}">{% if status.running %}Запущен{% else %}Остановлен{% endif %}</span></div>
+          <div id="status-updated" class="status-line">Обновлено: {{ status.updated_at }}</div>
+        </div>
+
+        <div class="status-grid">
+          <div class="status-pill" id="status-auth">
+            Авторизация:
+            {% if auth_status.authorized %}<span class="run">успешно</span>{% else %}<span class="stop">не выполнена</span>{% endif %}
+            ({{ auth_status.message }})
+          </div>
+          <div class="status-pill" id="status-proxy">
+            MTProxy:
+            {% if proxy_status.enabled %}{% if proxy_status.available %}<span class="run">подключение установлено</span>{% else %}<span class="stop">ошибка подключения</span>{% endif %}{% else %}<span class="stop">не используется</span>{% endif %}
+          </div>
+          <div class="status-pill" id="status-ftps">
+            FTPS:
+            {% if ftps_status.enabled %}{% if ftps_status.available %}<span class="run">подключение установлено</span>{% else %}<span class="stop">ошибка подключения</span>{% endif %}{% else %}<span class="stop">не используется</span>{% endif %}
+            ({{ ftps_status.message }})
+          </div>
+          <div class="status-pill" id="status-sftp">
+            SFTP:
+            {% if sftp_status.enabled %}{% if sftp_status.available %}<span class="run">подключение установлено</span>{% else %}<span class="stop">ошибка подключения</span>{% endif %}{% else %}<span class="stop">не используется</span>{% endif %}
+          </div>
+          <div class="status-pill" id="status-counters">Скачано: {{ status.downloaded }} | Ошибок: {{ status.failed }} | Пропущено: {{ status.skipped }}</div>
+          <div class="status-pill" id="status-sftp-counters">Upload: загружено {{ status.sftp_uploaded }} | пропущено {{ status.sftp_skipped }} | ошибок {{ status.sftp_failed }}</div>
+        </div>
+
+        <div class="status-main">
+          <div id="status-progress" class="status-pill">Прогресс файла: {{ status.progress_percent }}% ({{ status.progress_received }} / {{ status.progress_total }} байт)</div>
+          <div id="status-upload-progress" class="status-pill">Upload: {{ status.upload_progress_percent }}% ({{ status.upload_progress_received }} / {{ status.upload_progress_total }} байт) | 0 B/s | ETA: —</div>
+        </div>
+
+        <div id="file-progress-list" class="table-wrap tight">
+          <table>
+            <thead>
+              <tr><th>message_id</th><th>Прогресс</th><th>Статус</th></tr>
+            </thead>
+            <tbody id="file-progress-body">
+              <tr><td colspan="3">Нет активных загрузок.</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <div id="upload-progress-list" class="table-wrap tight">
+          <table>
+            <thead>
+              <tr><th>upload</th><th>Прогресс</th><th>Статус</th></tr>
+            </thead>
+            <tbody id="upload-progress-body">
+              <tr><td colspan="3">Нет активных upload задач.</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <details class="status-details">
+          <summary>Показать расширенные детали</summary>
+          <div class="status-details-grid">
+            <div id="status-message">Сообщение: {{ status.message }}</div>
+            <div id="status-concurrency">Параллельность: {{ status.current_concurrency }} / {{ status.configured_concurrency }}</div>
+            <div id="status-current">Текущий message_id: {{ status.current_message_id }}</div>
+            <div id="status-file">Последний файл: {{ status.last_file }}</div>
+            <div id="status-ftps-check-state">FTPS проверка: {% if status.ftps_check_running %}<span class="run">выполняется</span>{% else %}<span class="stop">не запущена</span>{% endif %}</div>
+            <div id="status-ftps-check-counters">FTPS check: {{ status.ftps_check_checked }} / {{ status.ftps_check_total }} | подтверждено {{ status.ftps_check_verified }} | missing {{ status.ftps_check_missing }} | ошибок {{ status.ftps_check_failed }} | удалено {{ status.ftps_check_cleaned }}</div>
+            <div id="status-ftps-check-file">FTPS текущий файл: {{ status.ftps_check_current_file }}</div>
+            <div id="status-ftps-check-last">FTPS last: {{ status.ftps_check_last_info }}</div>
+            <div id="status-ftps-check-missing">FTPS missing paths: {% if status.ftps_check_missing_examples %}{{ status.ftps_check_missing_examples|join(' | ') }}{% endif %}</div>
+            <div id="status-ftps-message">FTPS сообщение: {{ ftps_status.message }}</div>
+            <div id="result-message">{% if message %}Результат: {{ message }}{% endif %}</div>
+            <div id="need-code-hint">{% if need_code %}Требуется код подтверждения. Введите поле "Код из Telegram" и нажмите "Авторизоваться" снова.{% endif %}</div>
+            <div id="need-password-hint">{% if need_password %}Требуется пароль 2FA. Введите поле "Пароль 2FA" и нажмите "Авторизоваться" снова.{% endif %}</div>
+          </div>
+        </details>
+      </div>
+
+      <p class="note">Статус обновляется через SSE без постоянного опроса `GET /status`.</p>
+      <div id="debug-box" class="debug-box">
+        <pre id="debug-log" class="debug-log">Debug disabled.</pre>
+      </div>

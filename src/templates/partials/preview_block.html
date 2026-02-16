@@ -1,0 +1,74 @@
+      <h2>Предпросмотр аудио</h2>
+      <p class="sub">Нумерация используется для выбора диапазона "с / по".</p>
+
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>#</th>
+              <th>message_id</th>
+              <th>✓</th>
+              <th>⇪</th>
+              <th>Название</th>
+              <th>Дата</th>
+            </tr>
+          </thead>
+          <tbody id="preview-table-body">
+            {% if preview %}
+              {% for item in preview %}
+              <tr>
+                <td class="mono">{{ item.index }}</td>
+                <td class="mono">{{ item.message_id }}</td>
+                <td>{% if item.downloaded %}<span class="downloaded-ok">✓</span>{% else %}<span class="downloaded-empty">-</span>{% endif %}</td>
+                <td>{% if item.remote_uploaded %}<span class="remote-ok">✓</span>{% else %}<span class="downloaded-empty">-</span>{% endif %}</td>
+                <td>{{ item.title }}</td>
+                <td>{{ item.date }}</td>
+              </tr>
+              {% endfor %}
+            {% else %}
+              <tr>
+                <td colspan="6">Нет данных. Нажмите "Авторизоваться" или "Обновить предпросмотр".</td>
+              </tr>
+            {% endif %}
+          </tbody>
+        </table>
+      </div>
+
+      <h3 class="section-title">Предпросмотр FTPS каталога</h3>
+      <p id="remote-preview-meta" class="sub">{{ ftps_remote_preview_meta }}</p>
+
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>scope</th>
+              <th>type</th>
+              <th>name</th>
+              <th>size</th>
+              <th>modify</th>
+              <th>path</th>
+              <th class="debug-only-col">list_source</th>
+            </tr>
+          </thead>
+          <tbody id="remote-preview-table-body">
+            {% if ftps_remote_preview %}
+              {% for item in ftps_remote_preview %}
+              <tr>
+                <td class="mono">{{ item.scope }}</td>
+                <td>{{ item.type }}</td>
+                <td>{{ item.name }}</td>
+                <td class="mono">{{ item.size }}</td>
+                <td class="mono">{{ item.modify }}</td>
+                <td class="mono">{{ item.path }}</td>
+                <td class="mono debug-only-col">{{ item.list_source }}</td>
+              </tr>
+              {% endfor %}
+            {% else %}
+              <tr>
+                <td colspan="7">Нажмите "Предпросмотр FTPS", чтобы посмотреть файлы на удаленном каталоге.</td>
+              </tr>
+            {% endif %}
+          </tbody>
+        </table>
+      </div>
+

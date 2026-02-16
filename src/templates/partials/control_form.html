@@ -1,0 +1,293 @@
+      <div class="topbar">
+        <div class="toolbar">
+          <button id="theme-toggle" class="btn secondary compact" type="button">Тёмная тема</button>
+          <button id="channel-menu-toggle" class="btn secondary compact" type="button">История каналов</button>
+        </div>
+        <label class="check-row">
+          <input id="debug-toggle" type="checkbox">
+          <span>Дебаг</span>
+        </label>
+      </div>
+
+      <div id="channel-menu-box" class="menu-box hidden">
+        <div class="btn-row btn-row-tight">
+          <button id="channel-menu-refresh" class="btn secondary xs" type="button">Обновить статусы</button>
+        </div>
+        <div id="channel-menu-status" class="sub">Загрузка списка каналов...</div>
+        <div id="channel-menu-list"></div>
+      </div>
+
+      <form method="post" action="/authorize">
+        <div class="tab-row">
+          <button type="button" class="btn secondary compact tab-btn active" data-tab-target="tab-control">Пульт</button>
+          <button type="button" class="btn secondary compact tab-btn" data-tab-target="tab-telegram">Telegram</button>
+          <button type="button" class="btn secondary compact tab-btn" data-tab-target="tab-sftp">SFTP</button>
+          <button type="button" class="btn secondary compact tab-btn" data-tab-target="tab-ftps">FTPS</button>
+        </div>
+
+        <div id="tab-control" class="tab-panel active">
+          <div class="grid">
+            <div class="field-sm">
+              <div class="label-row">
+                <label>STARTUP_SCAN_LIMIT</label>
+                <span class="help" tabindex="0" data-tip="Сколько последних сообщений проверять при старте.">?</span>
+              </div>
+              <input name="startup_scan_limit" value="{{ form.startup_scan_limit }}">
+            </div>
+            <div class="field-sm">
+              <div class="label-row">
+                <label>Потоков загрузки</label>
+                <span class="help" tabindex="0" data-tip="Сколько аудиофайлов качать одновременно.">?</span>
+              </div>
+              <input name="download_concurrency" value="{{ form.download_concurrency }}" placeholder="3">
+            </div>
+
+            <div class="full check-grid">
+              <label class="check-row"><input id="remember_me" type="checkbox" name="remember_me" {% if form.remember_me %}checked{% endif %}> <span>Запомнить меня</span></label>
+              <label class="check-row"><input id="use_mtproxy" type="checkbox" name="use_mtproxy" {% if form.use_mtproxy %}checked{% endif %}> <span>Использовать mtproxy</span></label>
+              <label class="check-row"><input id="use_sftp" type="checkbox" name="use_sftp" {% if form.use_sftp %}checked{% endif %}> <span>Загружать на SFTP</span></label>
+              <label class="check-row"><input id="use_ftps" type="checkbox" name="use_ftps" {% if form.use_ftps %}checked{% endif %}> <span>Загружать на FTPS</span></label>
+              <label class="check-row"><input id="enable_periodic_checks" type="checkbox" name="enable_periodic_checks" {% if form.enable_periodic_checks %}checked{% endif %}> <span>Проверять новые главы</span></label>
+              <label class="check-row"><input id="download_new" type="checkbox" name="download_new" {% if form.download_new %}checked{% endif %}> <span>Скачать новые</span></label>
+            </div>
+
+            <div class="full">
+              <div class="index-inline">
+                <div class="field-sm">
+                  <div class="label-row">
+                    <label>CHANNEL_ID</label>
+                    <span class="help" tabindex="0" data-tip="@username канала или id вида -100...">?</span>
+                  </div>
+                  <input id="channel_id" name="channel_id" value="{{ form.channel_id }}" placeholder="@channel or -100..." required>
+                </div>
+                <div class="field-xs">
+                  <div class="label-row">
+                    <label>С индекса</label>
+                    <span class="help" tabindex="0" data-tip="Начальный номер из предпросмотра.">?</span>
+                  </div>
+                  <input id="from_index" name="from_index" value="{{ form.from_index }}" placeholder="1">
+                </div>
+                <div class="field-xs">
+                  <div class="label-row">
+                    <label>По индекс</label>
+                    <span class="help" tabindex="0" data-tip="Конечный номер из предпросмотра.">?</span>
+                  </div>
+                  <input id="to_index" name="to_index" value="{{ form.to_index }}" placeholder="50">
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div class="btn-row">
+            <button class="btn" formaction="/authorize" type="submit">Авторизоваться</button>
+            <button class="btn secondary" formaction="/check_sftp" type="submit">Проверить SFTP</button>
+            <button class="btn secondary" formaction="/check_ftps" type="submit">Проверить FTPS</button>
+            <button class="btn secondary" formaction="/warmup_ftps_manifest" type="submit">Прогрев manifest</button>
+            <button class="btn secondary" formaction="/preview" type="submit">Обновить предпросмотр</button>
+            <button class="btn secondary" formaction="/preview_ftps" type="submit">Предпросмотр FTPS</button>
+            <button id="download-toggle-btn" class="btn" type="button">Начать скачивание</button>
+            <button id="upload-toggle-btn" class="btn secondary" type="button">Начать загрузку</button>
+            <button class="btn secondary" formaction="/stop_server" type="submit">Стоп сервер</button>
+          </div>
+        </div>
+
+        <div id="tab-telegram" class="tab-panel">
+          <div class="check-row" style="margin-bottom:8px;">
+            <input id="show-telegram-settings" type="checkbox">
+            <label for="show-telegram-settings">Показать/скрыть чувствительные поля</label>
+          </div>
+          <div class="grid">
+            <div>
+              <div class="label-row">
+                <label>API_ID</label>
+                <span class="help" tabindex="0" data-tip="Числовой ID приложения Telegram API.">?</span>
+                <a class="inline-link" href="https://my.telegram.org/apps" target="_blank" rel="noopener noreferrer">Получить</a>
+              </div>
+              <input class="tg-secret" type="password" name="api_id" value="{{ form.api_id }}" required>
+            </div>
+            <div>
+              <div class="label-row">
+                <label>API_HASH</label>
+                <span class="help" tabindex="0" data-tip="Секретный hash приложения Telegram API.">?</span>
+                <a class="inline-link" href="https://my.telegram.org/apps" target="_blank" rel="noopener noreferrer">Получить</a>
+              </div>
+              <input class="tg-secret" type="password" name="api_hash" value="{{ form.api_hash }}" required>
+            </div>
+            <div>
+              <div class="label-row">
+                <label>PHONE</label>
+                <span class="help" tabindex="0" data-tip="Номер в международном формате, например +79990001122.">?</span>
+              </div>
+              <input class="tg-secret" type="password" name="phone" value="{{ form.phone }}" placeholder="+79990001122" required>
+            </div>
+            <div>
+              <div class="label-row">
+                <label>Код из Telegram (если запросили)</label>
+                <span class="help" tabindex="0" data-tip="Одноразовый код подтверждения из Telegram.">?</span>
+              </div>
+              <input class="tg-secret" type="password" name="code" value="{{ form.code }}" placeholder="12345">
+            </div>
+            <div>
+              <div class="label-row">
+                <label>Пароль 2FA (если включен)</label>
+                <span class="help" tabindex="0" data-tip="Пароль двухфакторной защиты Telegram.">?</span>
+              </div>
+              <input class="tg-secret" type="password" name="password" value="{{ form.password }}" placeholder="Пароль 2FA">
+            </div>
+            <div id="mtproxy-group" class="full {% if not form.use_mtproxy %}hidden{% endif %}">
+              <div class="label-row">
+                <label>Ссылка/строка MTProxy</label>
+                <span class="help" tabindex="0" data-tip="Например: server=host&port=443&secret=...">?</span>
+              </div>
+              <input class="tg-secret" type="password" name="mtproxy_link" value="{{ form.mtproxy_link }}" placeholder="server=example.com&port=443&secret=...">
+            </div>
+            <div>
+              <div class="label-row">
+                <label>SESSION_NAME</label>
+                <span class="help" tabindex="0" data-tip="Имя файла сессии Telethon.">?</span>
+              </div>
+              <input class="tg-secret" type="password" name="session_name" value="{{ form.session_name }}">
+            </div>
+            <div class="full">
+              <div class="label-row">
+                <label>Путь сохранения аудио</label>
+                <span class="help" tabindex="0" data-tip="Базовый локальный каталог. Подпапка канала создается автоматически.">?</span>
+              </div>
+              <input name="download_dir" value="{{ form.download_dir }}">
+            </div>
+          </div>
+        </div>
+
+        <div id="tab-sftp" class="tab-panel">
+          <div class="check-row" style="margin-bottom:8px;">
+            <input id="show-sftp-settings" type="checkbox">
+            <label for="show-sftp-settings">Показать/скрыть host/login/port/password</label>
+          </div>
+          <div class="grid">
+            <div class="full" id="sftp-group">
+              <div class="grid">
+                <div>
+                  <div class="label-row"><label>SFTP_HOST</label></div>
+                  <input class="sftp-secret" type="password" name="sftp_host" value="{{ form.sftp_host }}" placeholder="sftp.example.com">
+                </div>
+                <div>
+                  <div class="label-row"><label>SFTP_PORT</label></div>
+                  <input class="sftp-secret" type="password" name="sftp_port" value="{{ form.sftp_port }}" placeholder="22">
+                </div>
+                <div>
+                  <div class="label-row"><label>SFTP_USERNAME</label></div>
+                  <input class="sftp-secret" type="password" name="sftp_username" value="{{ form.sftp_username }}" placeholder="username">
+                </div>
+                <div>
+                  <div class="label-row"><label>SFTP_PASSWORD</label></div>
+                  <input class="sftp-secret" type="password" name="sftp_password" value="{{ form.sftp_password }}" placeholder="password">
+                </div>
+                <div class="full">
+                  <div class="label-row">
+                    <label>SFTP_REMOTE_DIR</label>
+                    <span class="help" tabindex="0" data-tip="Базовый каталог на сервере.">?</span>
+                  </div>
+                  <input name="sftp_remote_dir" value="{{ form.sftp_remote_dir }}" placeholder="/uploads/books">
+                </div>
+                <div class="full">
+                  <div class="check-row">
+                    <input id="cleanup_local_after_sftp" type="checkbox" name="cleanup_local_after_sftp" {% if form.cleanup_local_after_sftp %}checked{% endif %}>
+                    <label for="cleanup_local_after_sftp">Удалять локальный файл после подтвержденной загрузки на SFTP</label>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div id="tab-ftps" class="tab-panel">
+          <div class="check-row" style="margin-bottom:8px;">
+            <input id="show-ftps-settings" type="checkbox">
+            <label for="show-ftps-settings">Показать/скрыть host/login/port/password</label>
+          </div>
+          <div class="grid">
+            <div class="full" id="ftps-group">
+              <div class="grid">
+                <div>
+                  <div class="label-row"><label>FTPS_HOST</label></div>
+                  <input class="ftps-secret" type="password" name="ftps_host" value="{{ form.ftps_host }}" placeholder="ftps.example.com">
+                </div>
+                <div>
+                  <div class="label-row"><label>FTPS_PORT</label></div>
+                  <input class="ftps-secret" type="password" name="ftps_port" value="{{ form.ftps_port }}" placeholder="21">
+                </div>
+                <div>
+                  <div class="label-row"><label>FTPS_USERNAME</label></div>
+                  <input class="ftps-secret" type="password" name="ftps_username" value="{{ form.ftps_username }}" placeholder="username">
+                </div>
+                <div>
+                  <div class="label-row"><label>FTPS_PASSWORD</label></div>
+                  <input class="ftps-secret" type="password" name="ftps_password" value="{{ form.ftps_password }}" placeholder="password">
+                </div>
+                <div class="full">
+                  <div class="label-row">
+                    <label>FTPS_REMOTE_DIR</label>
+                    <span class="help" tabindex="0" data-tip="Базовый каталог на FTPS.">?</span>
+                  </div>
+                  <input name="ftps_remote_dir" value="{{ form.ftps_remote_dir }}" placeholder="/uploads/books">
+                </div>
+                <div>
+                  <div class="label-row">
+                    <label>Кодировка FTPS</label>
+                    <span class="help" tabindex="0" data-tip="Авто сначала использует UTF-8, затем fallback cp1251.">?</span>
+                  </div>
+                  <select name="ftps_encoding">
+                    <option value="auto" {% if form.ftps_encoding == 'auto' %}selected{% endif %}>Авто</option>
+                    <option value="utf-8" {% if form.ftps_encoding == 'utf-8' %}selected{% endif %}>UTF-8</option>
+                    <option value="cp1251" {% if form.ftps_encoding == 'cp1251' %}selected{% endif %}>CP1251</option>
+                    <option value="latin-1" {% if form.ftps_encoding == 'latin-1' %}selected{% endif %}>Latin-1</option>
+                  </select>
+                </div>
+                <div>
+                  <div class="label-row">
+                    <label>Безопасный режим FTPS</label>
+                    <span class="help" tabindex="0" data-tip="Явный (explicit) обычно 21 порт, неявный (implicit) чаще 990.">?</span>
+                  </div>
+                  <select name="ftps_security_mode">
+                    <option value="explicit" {% if form.ftps_security_mode != 'implicit' %}selected{% endif %}>Явный (explicit)</option>
+                    <option value="implicit" {% if form.ftps_security_mode == 'implicit' %}selected{% endif %}>Неявный (implicit)</option>
+                  </select>
+                </div>
+                <div>
+                  <div class="check-row">
+                    <input id="ftps_passive_mode" type="checkbox" name="ftps_passive_mode" {% if form.ftps_passive_mode %}checked{% endif %}>
+                    <label for="ftps_passive_mode">Режим передачи: пассивный</label>
+                    <span class="help" tabindex="0" data-tip="Active mode не поддерживается текущей реализацией. При FTPS включается passive.">?</span>
+                  </div>
+                </div>
+                <div class="field-sm">
+                  <div class="label-row">
+                    <label>Потоков upload</label>
+                    <span class="help" tabindex="0" data-tip="Параллельность загрузки на удаленный сервер.">?</span>
+                  </div>
+                  <input name="ftps_upload_concurrency" value="{{ form.ftps_upload_concurrency }}" placeholder="2">
+                </div>
+                <div class="full">
+                  <div class="check-row">
+                    <input id="ftps_verify_tls" type="checkbox" name="ftps_verify_tls" {% if form.ftps_verify_tls %}checked{% endif %}>
+                    <label for="ftps_verify_tls">Проверять TLS-сертификат FTPS сервера</label>
+                  </div>
+                </div>
+                <div class="full">
+                  <div class="check-row">
+                    <input id="ftps_verify_hash" type="checkbox" name="ftps_verify_hash" {% if form.ftps_verify_hash %}checked{% endif %}>
+                    <label for="ftps_verify_hash">Проверять кэш (SHA-256)</label>
+                    <span class="help" tabindex="0" data-tip="Если отключить, проверка только по размеру. Быстрее, но риск битых файлов выше.">?</span>
+                  </div>
+                </div>
+                <div class="full">
+                  <div class="check-row">
+                    <input id="cleanup_local_after_ftps" type="checkbox" name="cleanup_local_after_ftps" {% if form.cleanup_local_after_ftps %}checked{% endif %}>
+                    <label for="cleanup_local_after_ftps">Удалять локальный файл после подтвержденной загрузки на FTPS</label>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </form>

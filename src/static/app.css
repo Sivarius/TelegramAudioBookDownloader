@@ -59,7 +59,7 @@ body {
 }
 
 .wrap {
-  width: min(1900px, calc(100vw - 24px));
+  width: min(2200px, calc(100vw - 20px));
   margin: 12px auto;
   display: grid;
   grid-template-columns: minmax(760px, 1.5fr) minmax(520px, 1fr);
@@ -89,6 +89,10 @@ h2 {
 h3 {
   margin: 0;
   font-size: 1.02rem;
+}
+
+.section-title {
+  margin-top: 12px;
 }
 
 .sub {
@@ -295,6 +299,11 @@ textarea:focus {
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
+}
+
+.btn-row-tight {
+  margin-top: 0;
+  margin-bottom: 8px;
 }
 
 .btn {
