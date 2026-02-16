@@ -1,5 +1,4 @@
 import asyncio
-from collections import deque
 import logging
 import os
 import sqlite3
@@ -22,6 +21,31 @@ from core.models import Settings
 from core.telegram_client import create_telegram_client, is_audio_message, resolve_channel_entity
 from ftps_ops import fetch_ftps_preview, ftps_audit_selected_channel
 from telegram_ops import fetch_preview, pick_range_ids, resolve_last_downloaded_message_id
+from web_runtime import (
+    _set_auth_status,
+    _set_debug_mode,
+    _set_ftps_remote_preview_cache,
+    _set_ftps_remote_preview_meta,
+    _set_ftps_status,
+    _set_preview_cache,
+    _set_proxy_status,
+    _set_sftp_status,
+    _set_status,
+    _status_payload,
+    auth_status,
+    configure_runtime_paths,
+    debug_log_buffer,
+    debug_log_lock,
+    ftps_remote_preview_cache,
+    ftps_remote_preview_meta,
+    ftps_status,
+    get_status_version,
+    preview_cache,
+    proxy_status,
+    sftp_status,
+    status_cond,
+    worker_status,
+)
 from web_form_ops import (
     _build_settings,
     _clear_phone_code_hash as _clear_phone_code_hash_base,
@@ -51,73 +75,7 @@ AUTO_CHECK_INTERVAL_SECONDS = int(os.getenv("AUTO_CHECK_INTERVAL_SECONDS", "7200
 
 app = Flask(__name__)
 setup_logging()
-
-
-debug_log_lock = threading.Lock()
-debug_log_buffer: deque[str] = deque(maxlen=400)
-debug_mode_enabled = False
-debug_file_handler: Optional[logging.Handler] = None
-debug_file_path = DB_PATH.parent / "debug.log.txt"
-
-
-class InMemoryLogHandler(logging.Handler):
-    def emit(self, record: logging.LogRecord) -> None:
-        try:
-            msg = self.format(record)
-        except Exception:
-            msg = record.getMessage()
-        with debug_log_lock:
-            debug_log_buffer.append(msg)
-
-
-class SuppressDebugLogsAccessFilter(logging.Filter):
-    def filter(self, record: logging.LogRecord) -> bool:
-        message = record.getMessage()
-        if "/debug_logs" in message:
-            return False
-        return True
-
-
-def _setup_debug_log_handler() -> None:
-    root = logging.getLogger()
-    if any(isinstance(h, InMemoryLogHandler) for h in root.handlers):
-        return
-    handler = InMemoryLogHandler()
-    handler.setLevel(logging.DEBUG)
-    handler.setFormatter(logging.Formatter("%(asctime)s | %(levelname)s | %(message)s"))
-    root.addHandler(handler)
-    werkzeug_logger = logging.getLogger("werkzeug")
-    if not any(isinstance(f, SuppressDebugLogsAccessFilter) for f in werkzeug_logger.filters):
-        werkzeug_logger.addFilter(SuppressDebugLogsAccessFilter())
-
-
-_setup_debug_log_handler()
-
-
-def _set_debug_mode(enabled: bool) -> None:
-    global debug_mode_enabled, debug_file_handler
-    root = logging.getLogger()
-    debug_mode_enabled = bool(enabled)
-    if debug_mode_enabled:
-        if debug_file_handler is None:
-            debug_file_path.parent.mkdir(parents=True, exist_ok=True)
-            file_handler = logging.FileHandler(debug_file_path, encoding="utf-8")
-            file_handler.setLevel(logging.DEBUG)
-            file_handler.setFormatter(
-                logging.Formatter("%(asctime)s | %(levelname)s | %(name)s | %(message)s")
-            )
-            root.addHandler(file_handler)
-            debug_file_handler = file_handler
-        root.setLevel(logging.DEBUG)
-    else:
-        if debug_file_handler is not None:
-            try:
-                root.removeHandler(debug_file_handler)
-                debug_file_handler.close()
-            except Exception:
-                pass
-            debug_file_handler = None
-        root.setLevel(logging.INFO)
+configure_runtime_paths(DB_PATH)
 
 worker_lock = threading.Lock()
 worker_thread: Optional[threading.Thread] = None
@@ -128,144 +86,6 @@ monitor_thread: Optional[threading.Thread] = None
 monitor_stop_event = threading.Event()
 runtime_session_name = ""
 runtime_remember_me = True
-status_lock = threading.Lock()
-status_cond = threading.Condition(status_lock)
-status_version = 0
-worker_status = {
-    "running": False,
-    "message": "Ожидание запуска.",
-    "downloaded": 0,
-    "failed": 0,
-    "skipped": 0,
-    "current_message_id": "",
-    "last_file": "",
-    "updated_at": "",
-    "configured_concurrency": 1,
-    "current_concurrency": 1,
-    "sftp_uploaded": 0,
-    "sftp_skipped": 0,
-    "sftp_failed": 0,
-    "progress_percent": 0,
-    "progress_received": 0,
-    "progress_total": 0,
-    "upload_progress_percent": 0,
-    "upload_progress_received": 0,
-    "upload_progress_total": 0,
-    "upload_progress_speed_bps": 0.0,
-    "upload_progress_eta_sec": 0.0,
-    "ftps_check_running": False,
-    "ftps_check_checked": 0,
-    "ftps_check_total": 0,
-    "ftps_check_verified": 0,
-    "ftps_check_missing": 0,
-    "ftps_check_failed": 0,
-    "ftps_check_cleaned": 0,
-    "ftps_check_current_file": "",
-    "ftps_check_last_info": "",
-    "ftps_check_missing_examples": [],
-    "file_progresses": {},
-    "upload_file_progresses": {},
-    "mode": "idle",
-}
-preview_cache: list[dict] = []
-ftps_remote_preview_cache: list[dict] = []
-ftps_remote_preview_meta: str = ""
-auth_status = {
-    "authorized": False,
-    "message": "Авторизация не выполнялась.",
-    "updated_at": "",
-}
-proxy_status = {
-    "enabled": False,
-    "available": False,
-    "message": "MTProxy не используется.",
-    "updated_at": "",
-}
-sftp_status = {
-    "enabled": False,
-    "available": False,
-    "message": "SFTP не используется.",
-    "updated_at": "",
-}
-ftps_status = {
-    "enabled": False,
-    "available": False,
-    "message": "FTPS не используется.",
-    "updated_at": "",
-}
-
-
-def _set_status(**kwargs) -> None:
-    global status_version
-    worker_status.update(kwargs)
-    worker_status["updated_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    with status_cond:
-        status_version += 1
-        status_cond.notify_all()
-
-
-def _set_auth_status(authorized: bool, message: str) -> None:
-    global status_version
-    auth_status["authorized"] = authorized
-    auth_status["message"] = message
-    auth_status["updated_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    with status_cond:
-        status_version += 1
-        status_cond.notify_all()
-
-
-def _set_proxy_status(enabled: bool, available: bool, message: str) -> None:
-    global status_version
-    proxy_status["enabled"] = enabled
-    proxy_status["available"] = available
-    proxy_status["message"] = message
-    proxy_status["updated_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    with status_cond:
-        status_version += 1
-        status_cond.notify_all()
-
-
-def _set_sftp_status(enabled: bool, available: bool, message: str) -> None:
-    global status_version
-    sftp_status["enabled"] = enabled
-    sftp_status["available"] = available
-    sftp_status["message"] = message
-    sftp_status["updated_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    with status_cond:
-        status_version += 1
-        status_cond.notify_all()
-
-
-def _set_ftps_status(enabled: bool, available: bool, message: str) -> None:
-    global status_version
-    ftps_status["enabled"] = enabled
-    ftps_status["available"] = available
-    ftps_status["message"] = message
-    ftps_status["updated_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    with status_cond:
-        status_version += 1
-        status_cond.notify_all()
-
-
-def _status_payload() -> dict:
-    return {
-        **worker_status,
-        "auth_authorized": auth_status["authorized"],
-        "auth_message": auth_status["message"],
-        "auth_updated_at": auth_status["updated_at"],
-        "proxy_enabled": proxy_status["enabled"],
-        "proxy_available": proxy_status["available"],
-        "proxy_message": proxy_status["message"],
-        "proxy_updated_at": proxy_status["updated_at"],
-        "sftp_enabled": sftp_status["enabled"],
-        "sftp_available": sftp_status["available"],
-        "sftp_message": sftp_status["message"],
-        "sftp_updated_at": sftp_status["updated_at"],
-        "ftps_enabled": ftps_status["enabled"],
-        "ftps_available": ftps_status["available"],
-        "ftps_message": ftps_status["message"],
-        "ftps_updated_at": ftps_status["updated_at"],
-    }
 
 
 def _load_saved_form() -> dict:
@@ -1132,7 +952,7 @@ def _register_basic_routes() -> None:
             "load_saved_form": _load_saved_form,
             "status_payload": _status_payload,
             "status_cond": status_cond,
-            "get_status_version": lambda: status_version,
+            "get_status_version": get_status_version,
             "debug_log_lock": debug_log_lock,
             "debug_log_buffer": debug_log_buffer,
             "set_debug_mode": _set_debug_mode,
@@ -1163,21 +983,6 @@ def _register_basic_routes() -> None:
             "resolve_last_downloaded_message_id": _resolve_last_downloaded_message_id,
         },
     )
-
-
-def _set_preview_cache(value: list[dict]) -> None:
-    global preview_cache
-    preview_cache = value
-
-
-def _set_ftps_remote_preview_cache(value: list[dict]) -> None:
-    global ftps_remote_preview_cache
-    ftps_remote_preview_cache = value
-
-
-def _set_ftps_remote_preview_meta(value: str) -> None:
-    global ftps_remote_preview_meta
-    ftps_remote_preview_meta = str(value or "")
 
 
 _register_basic_routes()
@@ -1242,8 +1047,7 @@ def authorize():
     _set_auth_status(True, auth_message)
 
     preview_ok, preview_message, items = asyncio.run(_fetch_preview(settings))
-    global preview_cache
-    preview_cache = items if preview_ok else []
+    _set_preview_cache(items if preview_ok else [])
 
     return _render(
         form,
@@ -1297,10 +1101,9 @@ def start_download():
     if not channel_ok:
         return _render(form, channel_message)
 
-    global preview_cache
     if not preview_cache:
         preview_ok, _, items = asyncio.run(_fetch_preview(settings))
-        preview_cache = items if preview_ok else []
+        _set_preview_cache(items if preview_ok else [])
 
     allowed_message_ids = _pick_range_ids(preview_cache, form["from_index"], form["to_index"])
     if allowed_message_ids is not None and len(allowed_message_ids) == 0:
