@@ -1,14 +1,17 @@
 import asyncio
 import ftplib
 import hashlib
+import json
 import os
 import posixpath
 import re
 import socket
 import ssl
 import threading
+import time
 import unicodedata
 from concurrent.futures import Future, TimeoutError as FutureTimeoutError
+from io import BytesIO
 from pathlib import PurePosixPath
 from typing import Callable, Optional
 
@@ -20,6 +23,7 @@ from core.models import Settings
 FTPS_TIMEOUT_SECONDS = 30
 FTPS_LONG_TIMEOUT_SECONDS = 180
 FTPS_LIST_TIMEOUT_SECONDS = 10
+FTPS_MANIFEST_FILE = ".teleparser_manifest.json"
 
 
 class FTPSSync:
@@ -33,6 +37,9 @@ class FTPSSync:
         self._loop: Optional[asyncio.AbstractEventLoop] = None
         self._loop_thread: Optional[threading.Thread] = None
         self._ftplib_client: Optional[ftplib.FTP_TLS] = None
+        self._manifest_entries: dict[str, dict] = {}
+        self._manifest_loaded = False
+        self._manifest_dirty = False
 
     @property
     def enabled(self) -> bool:
@@ -202,6 +209,9 @@ class FTPSSync:
             )
             channel_remote = self.ensure_remote_dir(channel_remote)
             self._remote_channel_dir = channel_remote
+            self._manifest_entries = {}
+            self._manifest_loaded = False
+            self._manifest_dirty = False
             names: set[str] = set()
             fallback_rows, _ = self._list_dir_detailed_ftplib_sync(channel_remote, limit=10000)
             names = {
@@ -218,6 +228,7 @@ class FTPSSync:
                 except Exception:
                     names = set()
             self._remote_file_names = names
+            self._load_manifest_locked()
 
     async def _list_names_async(self, remote_dir: str) -> set[str]:
         if not self._client:
@@ -298,6 +309,143 @@ class FTPSSync:
                 self._close_ftplib_client()
         self._ftplib_client = self._connect_ftplib_explicit()
         return self._ftplib_client
+
+    def _manifest_remote_path(self) -> str:
+        if not self._remote_channel_dir:
+            return ""
+        return posixpath.join(self._remote_channel_dir, FTPS_MANIFEST_FILE)
+
+    def _load_manifest_locked(self) -> None:
+        if self._manifest_loaded:
+            return
+        self._manifest_entries = {}
+        self._manifest_dirty = False
+        manifest_path = self._manifest_remote_path()
+        if not manifest_path:
+            self._manifest_loaded = True
+            return
+        try:
+            client = self._get_ftplib_client()
+            buffer = BytesIO()
+            client.retrbinary(f"RETR {manifest_path}", buffer.write, blocksize=1024 * 64)
+            payload = buffer.getvalue().decode("utf-8", errors="ignore").strip()
+            if payload:
+                raw = json.loads(payload)
+                if isinstance(raw, dict):
+                    files = raw.get("files", raw)
+                    if isinstance(files, dict):
+                        for name, item in files.items():
+                            if not isinstance(item, dict):
+                                continue
+                            key = self._normalize_name(str(name))
+                            self._manifest_entries[key] = {
+                                "size": int(item.get("size", 0) or 0),
+                                "sha256": str(item.get("sha256", "") or "").strip().lower(),
+                                "remote_path": str(item.get("remote_path", "") or "").strip(),
+                                "updated_at": str(item.get("updated_at", "") or "").strip(),
+                            }
+        except Exception as exc:
+            text = str(exc).lower()
+            if "550" not in text and "not found" not in text:
+                self._close_ftplib_client()
+        finally:
+            self._manifest_loaded = True
+
+    def _flush_manifest_locked(self) -> None:
+        if not self._manifest_loaded:
+            self._load_manifest_locked()
+        if not self._manifest_dirty:
+            return
+        manifest_path = self._manifest_remote_path()
+        if not manifest_path:
+            return
+        temp_path = f"{manifest_path}.tmp"
+        data = {
+            "version": 1,
+            "files": self._manifest_entries,
+        }
+        payload = json.dumps(data, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+        client = self._get_ftplib_client()
+        try:
+            client.storbinary(f"STOR {temp_path}", BytesIO(payload), blocksize=1024 * 64)
+            try:
+                client.delete(manifest_path)
+            except Exception:
+                pass
+            try:
+                client.rename(temp_path, manifest_path)
+            except Exception:
+                client.storbinary(f"STOR {manifest_path}", BytesIO(payload), blocksize=1024 * 64)
+                try:
+                    client.delete(temp_path)
+                except Exception:
+                    pass
+            self._manifest_dirty = False
+        except Exception:
+            self._close_ftplib_client()
+            raise
+
+    def _manifest_match_locked(
+        self,
+        local_file_path: str,
+        verify_hash: bool = False,
+        local_hash: str = "",
+    ) -> tuple[bool, str]:
+        if not self._manifest_loaded:
+            self._load_manifest_locked()
+        file_name = self._normalize_name(os.path.basename(local_file_path))
+        entry = self._manifest_entries.get(file_name)
+        if not entry:
+            return False, ""
+        local_size = int(os.path.getsize(local_file_path))
+        size_match = int(entry.get("size", 0) or 0) == local_size
+        if not size_match:
+            return False, "manifest_size_mismatch"
+        hash_match = True
+        should_verify_hash = bool(verify_hash and self.settings.ftps_verify_hash)
+        if should_verify_hash:
+            local_hash_value = (local_hash or "").strip().lower() or self._sha256_local(local_file_path)
+            remote_hash_value = str(entry.get("sha256", "") or "").strip().lower()
+            hash_match = bool(remote_hash_value) and remote_hash_value == local_hash_value
+        if not hash_match:
+            return False, "manifest_hash_mismatch"
+        remote_path = str(entry.get("remote_path", "") or "").strip()
+        return True, remote_path
+
+    def _manifest_upsert_locked(
+        self,
+        local_file_path: str,
+        remote_path: str,
+        local_hash: str = "",
+    ) -> None:
+        if not self._manifest_loaded:
+            self._load_manifest_locked()
+        file_name = self._normalize_name(os.path.basename(local_file_path))
+        if not file_name:
+            return
+        hash_value = (local_hash or "").strip().lower()
+        if self.settings.ftps_verify_hash and not hash_value:
+            hash_value = self._sha256_local(local_file_path)
+        self._manifest_entries[file_name] = {
+            "size": int(os.path.getsize(local_file_path)),
+            "sha256": hash_value,
+            "remote_path": (remote_path or "").strip(),
+            "updated_at": str(int(time.time())),
+        }
+        self._manifest_dirty = True
+
+    def _record_verified_manifest_locked(
+        self,
+        local_file_path: str,
+        remote_path: str,
+        local_hash: str = "",
+    ) -> None:
+        try:
+            self._manifest_upsert_locked(local_file_path, remote_path, local_hash)
+            self._flush_manifest_locked()
+        except Exception:
+            # Manifest is an optimization layer; do not break main flow.
+            pass
 
     def _list_dir_detailed_ftplib_sync(self, remote_dir: str, limit: int = 500) -> tuple[list[dict], str]:
         try:
@@ -529,6 +677,23 @@ class FTPSSync:
             remote_exists = await self._remote_exists_async(remote_path)
 
         if remote_exists and not force_upload:
+            manifest_ok, manifest_remote_path = self._manifest_match_locked(
+                local_file_path,
+                verify_hash=verify_hash,
+                local_hash="",
+            )
+            if manifest_ok:
+                manifest_path = manifest_remote_path or remote_path
+                try:
+                    if await self._remote_exists_async(manifest_path):
+                        self._remote_file_names.add(file_name)
+                        return (
+                            False,
+                            f"already_exists; remote={manifest_path}; size_match=True; hash_match=True; verified=True; matched_by=manifest",
+                        )
+                except Exception:
+                    pass
+
             size_match, hash_match = await self._verify_remote_file_async(
                 local_file_path,
                 remote_path,
@@ -591,6 +756,10 @@ class FTPSSync:
                 f"remote_hash={remote_hash_dbg[:12] if remote_hash_dbg else ''}"
             )
         reason = "reuploaded" if reuploaded else ("uploaded" if uploaded else "already_exists")
+        local_hash_final = ""
+        if self.settings.ftps_verify_hash and verify_hash:
+            local_hash_final = self._sha256_local(local_file_path)
+        self._record_verified_manifest_locked(local_file_path, remote_path, local_hash_final)
         return (
             uploaded,
             f"{reason}; remote={remote_path}; size_match={size_match}; hash_match={hash_match}; verified={verified}",
@@ -658,6 +827,42 @@ class FTPSSync:
         if not file_name:
             return False, "Пустое имя файла."
 
+        def _remember_verified(remote_verified_path: str, cache_name: str = "") -> None:
+            remembered_name = (cache_name or "").strip() or os.path.basename(remote_verified_path)
+            if remembered_name:
+                self._remote_file_names.add(remembered_name)
+            hash_for_manifest = ""
+            if self.settings.ftps_verify_hash and verify_hash:
+                hash_for_manifest = (local_hash or "").strip().lower() or self._sha256_local(local_file_path)
+            self._record_verified_manifest_locked(local_file_path, remote_verified_path, hash_for_manifest)
+
+        manifest_ok, manifest_remote_path = self._manifest_match_locked(
+            local_file_path,
+            verify_hash=verify_hash,
+            local_hash=local_hash,
+        )
+        if manifest_ok:
+            remote_candidate = manifest_remote_path or ""
+            hinted_candidate = self._normalize_remote_dir(remote_path_hint)
+            if hinted_candidate:
+                remote_candidate = hinted_candidate
+            if not remote_candidate:
+                remote_candidate = posixpath.join(self._remote_channel_dir, file_name)
+            try:
+                if self._check_remote_file_status_ftplib(
+                    local_file_path,
+                    remote_candidate,
+                    verify_hash=False,
+                    local_hash=local_hash,
+                )[0]:
+                    _remember_verified(remote_candidate, file_name)
+                    return (
+                        True,
+                        f"remote={remote_candidate}; size_match=True; hash_match=True; verified=True; matched_by=manifest",
+                    )
+            except Exception:
+                pass
+
         hinted_path = self._normalize_remote_dir(remote_path_hint)
         if hinted_path:
             try:
@@ -669,7 +874,7 @@ class FTPSSync:
                 )
                 verified = size_match and hash_match
                 if verified:
-                    self._remote_file_names.add(file_name)
+                    _remember_verified(hinted_path, file_name)
                     return (
                         True,
                         f"remote={hinted_path}; size_match={size_match}; hash_match={hash_match}; "
@@ -688,7 +893,7 @@ class FTPSSync:
                     local_hash=local_hash,
                 )
                 if ok_fb:
-                    self._remote_file_names.add(file_name)
+                    _remember_verified(hinted_path, file_name)
                     return True, f"{info_fb}; matched_by=db_cache_ftplib_fallback"
                 if "remote_present_mismatch" in info_fb:
                     return False, f"{info_fb}; matched_by=db_cache_ftplib_fallback"
@@ -725,7 +930,7 @@ class FTPSSync:
                         remote_hash_dbg = ""
                 verified = size_match and hash_match
                 if verified:
-                    self._remote_file_names.add(file_name)
+                    _remember_verified(direct_path, file_name)
                     return (
                         True,
                         f"remote={direct_path}; size_match={size_match}; hash_match={hash_match}; "
@@ -775,7 +980,7 @@ class FTPSSync:
                         remote_hash_dbg = ""
                 verified = size_match and hash_match
                 if verified:
-                    self._remote_file_names.add(candidate_name)
+                    _remember_verified(candidate_path, candidate_name)
                     return (
                         True,
                         f"remote={candidate_path}; size_match={size_match}; hash_match={hash_match}; "
@@ -822,6 +1027,7 @@ class FTPSSync:
                             remote_hash_dbg = ""
                     verified = size_match and hash_match
                     if verified:
+                        _remember_verified(candidate_path, candidate_name)
                         return (
                             True,
                             f"remote={candidate_path}; size_match={size_match}; hash_match={hash_match}; "
@@ -847,7 +1053,7 @@ class FTPSSync:
                     local_hash=local_hash,
                 )
                 if ok_fb:
-                    self._remote_file_names.add(candidates[0])
+                    _remember_verified(sample_path, candidates[0])
                     return True, f"{info_fb}; matched_by=fuzzy_ftplib_fallback"
                 if "remote_present_mismatch" in info_fb:
                     return False, f"{info_fb}; matched_by=fuzzy_ftplib_fallback"
@@ -857,42 +1063,55 @@ class FTPSSync:
                 )
             return False, f"remote_missing; remote={remote_path}"
         remote_path = posixpath.join(self._remote_channel_dir, remote_name)
-
-        size_match, hash_match = self.verify_remote_file(
-            local_file_path,
-            remote_path,
-            verify_hash=verify_hash,
-            local_hash=local_hash,
-        )
-        local_hash_dbg = local_hash.strip() if local_hash else ""
-        remote_hash_dbg = ""
-        if verify_hash and size_match and not hash_match:
-            forced_local_hash = self._sha256_local(local_file_path)
+        try:
             size_match, hash_match = self.verify_remote_file(
                 local_file_path,
                 remote_path,
-                verify_hash=True,
-                local_hash=forced_local_hash,
+                verify_hash=verify_hash,
+                local_hash=local_hash,
             )
-            local_hash_dbg = forced_local_hash
-            try:
-                remote_hash_dbg, _ = self._run(
-                    self._sha256_remote_async(remote_path),
-                    timeout=max(FTPS_LONG_TIMEOUT_SECONDS, 240),
+            local_hash_dbg = local_hash.strip() if local_hash else ""
+            remote_hash_dbg = ""
+            if verify_hash and size_match and not hash_match:
+                forced_local_hash = self._sha256_local(local_file_path)
+                size_match, hash_match = self.verify_remote_file(
+                    local_file_path,
+                    remote_path,
+                    verify_hash=True,
+                    local_hash=forced_local_hash,
                 )
-            except Exception:
-                remote_hash_dbg = ""
-        verified = size_match and hash_match
-        if verified:
-            self._remote_file_names.add(file_name)
-        return (
-            verified,
-            "remote="
-            f"{remote_path}; size_match={size_match}; hash_match={hash_match}; "
-            f"local_hash={local_hash_dbg[:12] if local_hash_dbg else ''}; "
-            f"remote_hash={remote_hash_dbg[:12] if remote_hash_dbg else ''}; "
-            f"verified={verified}",
-        )
+                local_hash_dbg = forced_local_hash
+                try:
+                    remote_hash_dbg, _ = self._run(
+                        self._sha256_remote_async(remote_path),
+                        timeout=max(FTPS_LONG_TIMEOUT_SECONDS, 240),
+                    )
+                except Exception:
+                    remote_hash_dbg = ""
+            verified = size_match and hash_match
+            if verified:
+                _remember_verified(remote_path, file_name)
+            return (
+                verified,
+                "remote="
+                f"{remote_path}; size_match={size_match}; hash_match={hash_match}; "
+                f"local_hash={local_hash_dbg[:12] if local_hash_dbg else ''}; "
+                f"remote_hash={remote_hash_dbg[:12] if remote_hash_dbg else ''}; "
+                f"verified={verified}",
+            )
+        except Exception as verify_exc:
+            ok_fb, info_fb = self._check_remote_file_status_ftplib(
+                local_file_path,
+                remote_path,
+                verify_hash=verify_hash,
+                local_hash=local_hash,
+            )
+            if ok_fb:
+                _remember_verified(remote_path, file_name)
+                return True, f"{info_fb}; matched_by=final_ftplib_fallback"
+            if "remote_present_mismatch" in info_fb:
+                return False, f"{info_fb}; matched_by=final_ftplib_fallback"
+            return False, f"{info_fb}; verify_exception={verify_exc}"
 
     def _check_remote_file_status_ftplib(
         self,
