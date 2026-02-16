@@ -89,19 +89,19 @@ install_dependencies.bat
 ```
 
 ## Docker Compose
-1. Заполнить `.env` (если файла нет, скопировать из `.env.example`).
+1. `.env` не обязателен: `docker-compose.yml` имеет безопасные дефолты и стартует без него.
 2. Прод-образ в Docker Hub: `amatsukine/telegram-audiobook-downloader:latest`.
-3. Для dev-режима (монтируется весь проект):
+3. Основной (рекомендуемый) запуск из готового образа:
    ```bash
-   docker compose up -d --build
+   docker compose up -d
    ```
-4. Для prod-режима (только данные, без монтирования исходников):
+4. Локальная пересборка образа из исходников (если нужно проверить локальные изменения):
    ```bash
    docker compose -f docker-compose.prod.yml up -d --build
    ```
    Каталог `./data` и файл БД будут созданы автоматически.
 5. Открыть:
-   - `http://127.0.0.1:8080`
+   - `http://127.0.0.1:8080` (или порт из `APP_HTTP_PORT`)
 
 Остановка:
 ```bash

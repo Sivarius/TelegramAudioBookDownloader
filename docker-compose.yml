@@ -1,19 +1,54 @@
 services:
   telegaparser:
-    build: .
     image: amatsukine/telegram-audiobook-downloader:latest
+    pull_policy: always
     container_name: telegaparser
     restart: unless-stopped
-    env_file:
-      - .env
+    init: true
     environment:
       APP_HOST: 0.0.0.0
-      APP_PORT: 8080
-      OPEN_BROWSER: 0
+      APP_PORT: "8080"
+      OPEN_BROWSER: "0"
       DB_PATH: /app/data/bot_data.sqlite3
       SESSION_NAME: /app/data/user_session
+      API_ID: ${API_ID:-}
+      API_HASH: ${API_HASH:-}
+      PHONE: ${PHONE:-}
+      CHANNEL_ID: ${CHANNEL_ID:-}
+      DOWNLOAD_DIR: ${DOWNLOAD_DIR:-downloads}
+      STARTUP_SCAN_LIMIT: ${STARTUP_SCAN_LIMIT:-200}
+      DOWNLOAD_CONCURRENCY: ${DOWNLOAD_CONCURRENCY:-3}
+      USE_MTPROXY: ${USE_MTPROXY:-0}
+      MTPROXY_LINK: ${MTPROXY_LINK:-}
+      USE_SFTP: ${USE_SFTP:-0}
+      SFTP_HOST: ${SFTP_HOST:-}
+      SFTP_PORT: ${SFTP_PORT:-22}
+      SFTP_USERNAME: ${SFTP_USERNAME:-}
+      SFTP_PASSWORD: ${SFTP_PASSWORD:-}
+      SFTP_REMOTE_DIR: ${SFTP_REMOTE_DIR:-}
+      CLEANUP_LOCAL_AFTER_SFTP: ${CLEANUP_LOCAL_AFTER_SFTP:-0}
+      USE_FTPS: ${USE_FTPS:-0}
+      FTPS_HOST: ${FTPS_HOST:-}
+      FTPS_PORT: ${FTPS_PORT:-21}
+      FTPS_USERNAME: ${FTPS_USERNAME:-}
+      FTPS_PASSWORD: ${FTPS_PASSWORD:-}
+      FTPS_REMOTE_DIR: ${FTPS_REMOTE_DIR:-}
+      FTPS_ENCODING: ${FTPS_ENCODING:-auto}
+      FTPS_VERIFY_TLS: ${FTPS_VERIFY_TLS:-1}
+      FTPS_PASSIVE_MODE: ${FTPS_PASSIVE_MODE:-1}
+      FTPS_SECURITY_MODE: ${FTPS_SECURITY_MODE:-explicit}
+      FTPS_UPLOAD_CONCURRENCY: ${FTPS_UPLOAD_CONCURRENCY:-2}
+      CLEANUP_LOCAL_AFTER_FTPS: ${CLEANUP_LOCAL_AFTER_FTPS:-0}
+      FTPS_HASH_VERIFY: ${FTPS_HASH_VERIFY:-1}
+      AUTO_CHECK_INTERVAL_SECONDS: ${AUTO_CHECK_INTERVAL_SECONDS:-7200}
     ports:
-      - "8080:8080"
+      - "${APP_HTTP_PORT:-8080}:8080"
     volumes:
       - ./downloads:/app/downloads
       - ./data:/app/data
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/status', timeout=5)"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 20s
