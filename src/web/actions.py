@@ -1,6 +1,6 @@
 from flask import request
 
-from web_action_service import (
+from web.action_service import (
     handle_authorize,
     handle_start_download,
     handle_start_upload,
