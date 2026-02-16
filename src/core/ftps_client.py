@@ -1,23 +1,21 @@
 import asyncio
 import ftplib
 import hashlib
-import json
 import os
 import posixpath
 import re
 import socket
 import ssl
 import threading
-import time
 import unicodedata
 from concurrent.futures import Future, TimeoutError as FutureTimeoutError
-from io import BytesIO
 from pathlib import PurePosixPath
 from typing import Callable, Optional
 
 import aioftp
 from aioftp.errors import StatusCodeError
 
+from core.ftps_manifest import FTPSManifestStore
 from core.models import Settings
 
 FTPS_TIMEOUT_SECONDS = 30
@@ -37,9 +35,14 @@ class FTPSSync:
         self._loop: Optional[asyncio.AbstractEventLoop] = None
         self._loop_thread: Optional[threading.Thread] = None
         self._ftplib_client: Optional[ftplib.FTP_TLS] = None
-        self._manifest_entries: dict[str, dict] = {}
-        self._manifest_loaded = False
-        self._manifest_dirty = False
+        self._manifest_store = FTPSManifestStore(
+            get_ftplib_client=self._get_ftplib_client,
+            close_ftplib_client=self._close_ftplib_client,
+            normalize_name=self._normalize_name,
+            sha256_local=self._sha256_local,
+            verify_hash_enabled=lambda: bool(self.settings.ftps_verify_hash),
+            manifest_file_name=FTPS_MANIFEST_FILE,
+        )
 
     @property
     def enabled(self) -> bool:
@@ -209,9 +212,7 @@ class FTPSSync:
             )
             channel_remote = self.ensure_remote_dir(channel_remote)
             self._remote_channel_dir = channel_remote
-            self._manifest_entries = {}
-            self._manifest_loaded = False
-            self._manifest_dirty = False
+            self._manifest_store.reset(channel_remote)
             names: set[str] = set()
             fallback_rows, _ = self._list_dir_detailed_ftplib_sync(channel_remote, limit=10000)
             names = {
@@ -311,79 +312,13 @@ class FTPSSync:
         return self._ftplib_client
 
     def _manifest_remote_path(self) -> str:
-        if not self._remote_channel_dir:
-            return ""
-        return posixpath.join(self._remote_channel_dir, FTPS_MANIFEST_FILE)
+        return self._manifest_store.manifest_remote_path()
 
     def _load_manifest_locked(self) -> None:
-        if self._manifest_loaded:
-            return
-        self._manifest_entries = {}
-        self._manifest_dirty = False
-        manifest_path = self._manifest_remote_path()
-        if not manifest_path:
-            self._manifest_loaded = True
-            return
-        try:
-            client = self._get_ftplib_client()
-            buffer = BytesIO()
-            client.retrbinary(f"RETR {manifest_path}", buffer.write, blocksize=1024 * 64)
-            payload = buffer.getvalue().decode("utf-8", errors="ignore").strip()
-            if payload:
-                raw = json.loads(payload)
-                if isinstance(raw, dict):
-                    files = raw.get("files", raw)
-                    if isinstance(files, dict):
-                        for name, item in files.items():
-                            if not isinstance(item, dict):
-                                continue
-                            key = self._normalize_name(str(name))
-                            self._manifest_entries[key] = {
-                                "size": int(item.get("size", 0) or 0),
-                                "sha256": str(item.get("sha256", "") or "").strip().lower(),
-                                "remote_path": str(item.get("remote_path", "") or "").strip(),
-                                "updated_at": str(item.get("updated_at", "") or "").strip(),
-                            }
-        except Exception as exc:
-            text = str(exc).lower()
-            if "550" not in text and "not found" not in text:
-                self._close_ftplib_client()
-        finally:
-            self._manifest_loaded = True
+        self._manifest_store.load()
 
     def _flush_manifest_locked(self) -> None:
-        if not self._manifest_loaded:
-            self._load_manifest_locked()
-        if not self._manifest_dirty:
-            return
-        manifest_path = self._manifest_remote_path()
-        if not manifest_path:
-            return
-        temp_path = f"{manifest_path}.tmp"
-        data = {
-            "version": 1,
-            "files": self._manifest_entries,
-        }
-        payload = json.dumps(data, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
-        client = self._get_ftplib_client()
-        try:
-            client.storbinary(f"STOR {temp_path}", BytesIO(payload), blocksize=1024 * 64)
-            try:
-                client.delete(manifest_path)
-            except Exception:
-                pass
-            try:
-                client.rename(temp_path, manifest_path)
-            except Exception:
-                client.storbinary(f"STOR {manifest_path}", BytesIO(payload), blocksize=1024 * 64)
-                try:
-                    client.delete(temp_path)
-                except Exception:
-                    pass
-            self._manifest_dirty = False
-        except Exception:
-            self._close_ftplib_client()
-            raise
+        self._manifest_store.flush()
 
     def _manifest_match_locked(
         self,
@@ -391,26 +326,11 @@ class FTPSSync:
         verify_hash: bool = False,
         local_hash: str = "",
     ) -> tuple[bool, str]:
-        if not self._manifest_loaded:
-            self._load_manifest_locked()
-        file_name = self._normalize_name(os.path.basename(local_file_path))
-        entry = self._manifest_entries.get(file_name)
-        if not entry:
-            return False, ""
-        local_size = int(os.path.getsize(local_file_path))
-        size_match = int(entry.get("size", 0) or 0) == local_size
-        if not size_match:
-            return False, "manifest_size_mismatch"
-        hash_match = True
-        should_verify_hash = bool(verify_hash and self.settings.ftps_verify_hash)
-        if should_verify_hash:
-            local_hash_value = (local_hash or "").strip().lower() or self._sha256_local(local_file_path)
-            remote_hash_value = str(entry.get("sha256", "") or "").strip().lower()
-            hash_match = bool(remote_hash_value) and remote_hash_value == local_hash_value
-        if not hash_match:
-            return False, "manifest_hash_mismatch"
-        remote_path = str(entry.get("remote_path", "") or "").strip()
-        return True, remote_path
+        return self._manifest_store.match(
+            local_file_path,
+            verify_hash=verify_hash,
+            local_hash=local_hash,
+        )
 
     def _manifest_upsert_locked(
         self,
@@ -418,21 +338,7 @@ class FTPSSync:
         remote_path: str,
         local_hash: str = "",
     ) -> None:
-        if not self._manifest_loaded:
-            self._load_manifest_locked()
-        file_name = self._normalize_name(os.path.basename(local_file_path))
-        if not file_name:
-            return
-        hash_value = (local_hash or "").strip().lower()
-        if self.settings.ftps_verify_hash and not hash_value:
-            hash_value = self._sha256_local(local_file_path)
-        self._manifest_entries[file_name] = {
-            "size": int(os.path.getsize(local_file_path)),
-            "sha256": hash_value,
-            "remote_path": (remote_path or "").strip(),
-            "updated_at": str(int(time.time())),
-        }
-        self._manifest_dirty = True
+        self._manifest_store.upsert(local_file_path, remote_path, local_hash=local_hash)
 
     def _record_verified_manifest_locked(
         self,
@@ -440,12 +346,7 @@ class FTPSSync:
         remote_path: str,
         local_hash: str = "",
     ) -> None:
-        try:
-            self._manifest_upsert_locked(local_file_path, remote_path, local_hash)
-            self._flush_manifest_locked()
-        except Exception:
-            # Manifest is an optimization layer; do not break main flow.
-            pass
+        self._manifest_store.record_verified(local_file_path, remote_path, local_hash=local_hash)
 
     def _list_dir_detailed_ftplib_sync(self, remote_dir: str, limit: int = 500) -> tuple[list[dict], str]:
         try:
