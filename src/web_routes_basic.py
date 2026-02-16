@@ -123,6 +123,40 @@ def register_basic_routes(app, deps: dict) -> None:
             deps["set_ftps_status"](False, True, "FTPS не используется.")
         return deps["render"](form, ftps_message)
 
+    @app.post("/warmup_ftps_manifest")
+    def warmup_ftps_manifest():
+        form = deps["form_from_request"]()
+        try:
+            settings = deps["build_settings"](form, require_channel=False)
+        except ValueError as exc:
+            return deps["render"](form, str(exc))
+        deps["store_settings"](settings)
+
+        if not settings.use_ftps:
+            deps["set_ftps_status"](False, True, "FTPS не используется.")
+            return deps["render"](form, "Прогрев manifest: FTPS не используется.")
+
+        ftps_ok, ftps_message = asyncio.run(deps["validate_ftps"](settings))
+        deps["set_ftps_status"](True, ftps_ok, ftps_message)
+        if not ftps_ok:
+            return deps["render"](form, f"Прогрев manifest: {ftps_message}")
+
+        if not (settings.channel or "").strip() or (settings.channel or "").strip() == "_":
+            return deps["render"](form, "Прогрев manifest: укажите CHANNEL_ID.")
+
+        warmup_settings = replace(settings, ftps_verify_hash=False)
+        audit_ok, audit_message = asyncio.run(deps["audit_ftps_selected_channel"](warmup_settings))
+        result_message = (
+            "Прогрев manifest завершен. "
+            "Проверка выполнялась без SHA-256 (только быстрый режим). "
+            f"{audit_message}"
+        )
+        if audit_ok:
+            preview_ok, _, items = asyncio.run(deps["fetch_preview"](settings))
+            if preview_ok:
+                deps["set_preview_cache"](items)
+        return deps["render"](form, result_message)
+
     @app.post("/channels_status")
     def channels_status():
         form = deps["form_from_request"]()
