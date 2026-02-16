@@ -8,46 +8,73 @@ from flask import request
 
 
 def register_action_routes(app, deps: dict) -> None:
+    def _persist_runtime_state(form: dict, settings) -> None:
+        runtime_state = deps["runtime_state"]
+        runtime_state["remember_me"] = bool(form["remember_me"])
+        runtime_state["session_name"] = settings.session_name
+        deps["store_remember_me"](runtime_state["remember_me"])
+        deps["store_enable_periodic_checks"](bool(form["enable_periodic_checks"]))
+
+    def _validate_proxy(form: dict, settings):
+        proxy_ok, proxy_message = asyncio.run(deps["validate_proxy"](settings))
+        if settings.use_mtproxy:
+            deps["set_proxy_status"](True, proxy_ok, proxy_message)
+            if not proxy_ok:
+                return False, deps["render"](form, proxy_message)
+        else:
+            deps["set_proxy_status"](False, True, "MTProxy не используется.")
+        return True, None
+
+    def _validate_sftp(form: dict, settings):
+        sftp_ok, sftp_message = asyncio.run(deps["validate_sftp"](settings))
+        if settings.use_sftp:
+            deps["set_sftp_status"](True, sftp_ok, sftp_message)
+            if not sftp_ok:
+                return False, deps["render"](form, sftp_message)
+        else:
+            deps["set_sftp_status"](False, True, "SFTP не используется.")
+        return True, None
+
+    def _validate_ftps(form: dict, settings):
+        ftps_ok, ftps_message = asyncio.run(deps["validate_ftps"](settings))
+        if settings.use_ftps:
+            deps["set_ftps_status"](True, ftps_ok, ftps_message)
+            if not ftps_ok:
+                return False, deps["render"](form, ftps_message)
+        else:
+            deps["set_ftps_status"](False, True, "FTPS не используется.")
+        return True, None
+
+    def _validate_stack(form: dict, settings, include_proxy: bool):
+        if include_proxy:
+            ok, response = _validate_proxy(form, settings)
+            if not ok:
+                return False, response
+        ok, response = _validate_sftp(form, settings)
+        if not ok:
+            return False, response
+        ok, response = _validate_ftps(form, settings)
+        if not ok:
+            return False, response
+        return True, None
+
     @app.post("/authorize")
     def authorize():
         form = deps["form_from_request"]()
-        runtime_state = deps["runtime_state"]
 
         try:
             settings = deps["build_settings"](form)
         except ValueError as exc:
             return deps["render"](form, str(exc))
 
-        runtime_state["remember_me"] = bool(form["remember_me"])
-        runtime_state["session_name"] = settings.session_name
-        deps["store_remember_me"](runtime_state["remember_me"])
-        deps["store_enable_periodic_checks"](bool(form["enable_periodic_checks"]))
+        _persist_runtime_state(form, settings)
+        runtime_state = deps["runtime_state"]
         if not runtime_state["remember_me"]:
             deps["delete_session_files"](settings.session_name)
 
-        proxy_ok, proxy_message = asyncio.run(deps["validate_proxy"](settings))
-        if settings.use_mtproxy:
-            deps["set_proxy_status"](True, proxy_ok, proxy_message)
-            if not proxy_ok:
-                return deps["render"](form, proxy_message)
-        else:
-            deps["set_proxy_status"](False, True, "MTProxy не используется.")
-
-        sftp_ok, sftp_message = asyncio.run(deps["validate_sftp"](settings))
-        if settings.use_sftp:
-            deps["set_sftp_status"](True, sftp_ok, sftp_message)
-            if not sftp_ok:
-                return deps["render"](form, sftp_message)
-        else:
-            deps["set_sftp_status"](False, True, "SFTP не используется.")
-
-        ftps_ok, ftps_message = asyncio.run(deps["validate_ftps"](settings))
-        if settings.use_ftps:
-            deps["set_ftps_status"](True, ftps_ok, ftps_message)
-            if not ftps_ok:
-                return deps["render"](form, ftps_message)
-        else:
-            deps["set_ftps_status"](False, True, "FTPS не используется.")
+        ok, response = _validate_stack(form, settings, include_proxy=True)
+        if not ok:
+            return response
 
         deps["store_settings"](settings)
         deps["upsert_current_channel_preference"](settings)
@@ -83,41 +110,16 @@ def register_action_routes(app, deps: dict) -> None:
     @app.post("/start")
     def start_download():
         form = deps["form_from_request"]()
-        runtime_state = deps["runtime_state"]
 
         try:
             settings = deps["build_settings"](form)
         except ValueError as exc:
             return deps["render"](form, str(exc))
 
-        runtime_state["remember_me"] = bool(form["remember_me"])
-        runtime_state["session_name"] = settings.session_name
-        deps["store_remember_me"](runtime_state["remember_me"])
-        deps["store_enable_periodic_checks"](bool(form["enable_periodic_checks"]))
-
-        proxy_ok, proxy_message = asyncio.run(deps["validate_proxy"](settings))
-        if settings.use_mtproxy:
-            deps["set_proxy_status"](True, proxy_ok, proxy_message)
-            if not proxy_ok:
-                return deps["render"](form, proxy_message)
-        else:
-            deps["set_proxy_status"](False, True, "MTProxy не используется.")
-
-        sftp_ok, sftp_message = asyncio.run(deps["validate_sftp"](settings))
-        if settings.use_sftp:
-            deps["set_sftp_status"](True, sftp_ok, sftp_message)
-            if not sftp_ok:
-                return deps["render"](form, sftp_message)
-        else:
-            deps["set_sftp_status"](False, True, "SFTP не используется.")
-
-        ftps_ok, ftps_message = asyncio.run(deps["validate_ftps"](settings))
-        if settings.use_ftps:
-            deps["set_ftps_status"](True, ftps_ok, ftps_message)
-            if not ftps_ok:
-                return deps["render"](form, ftps_message)
-        else:
-            deps["set_ftps_status"](False, True, "FTPS не используется.")
+        _persist_runtime_state(form, settings)
+        ok, response = _validate_stack(form, settings, include_proxy=True)
+        if not ok:
+            return response
 
         deps["store_settings"](settings)
         deps["upsert_current_channel_preference"](settings)
@@ -155,35 +157,19 @@ def register_action_routes(app, deps: dict) -> None:
     @app.post("/start_upload")
     def start_upload():
         form = deps["form_from_request"]()
-        runtime_state = deps["runtime_state"]
 
         try:
             settings = deps["build_settings"](form, require_channel=True)
         except ValueError as exc:
             return deps["render"](form, str(exc))
 
-        runtime_state["remember_me"] = bool(form["remember_me"])
-        runtime_state["session_name"] = settings.session_name
-        deps["store_remember_me"](runtime_state["remember_me"])
-        deps["store_enable_periodic_checks"](bool(form["enable_periodic_checks"]))
+        _persist_runtime_state(form, settings)
         deps["store_settings"](settings)
         deps["upsert_current_channel_preference"](settings)
 
-        sftp_ok, sftp_message = asyncio.run(deps["validate_sftp"](settings))
-        if settings.use_sftp:
-            deps["set_sftp_status"](True, sftp_ok, sftp_message)
-            if not sftp_ok:
-                return deps["render"](form, sftp_message)
-        else:
-            deps["set_sftp_status"](False, True, "SFTP не используется.")
-
-        ftps_ok, ftps_message = asyncio.run(deps["validate_ftps"](settings))
-        if settings.use_ftps:
-            deps["set_ftps_status"](True, ftps_ok, ftps_message)
-            if not ftps_ok:
-                return deps["render"](form, ftps_message)
-        else:
-            deps["set_ftps_status"](False, True, "FTPS не используется.")
+        ok, response = _validate_stack(form, settings, include_proxy=False)
+        if not ok:
+            return response
 
         if not settings.use_sftp and not settings.use_ftps:
             return deps["render"](form, "Для upload включите SFTP или FTPS.")

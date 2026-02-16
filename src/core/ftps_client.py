@@ -8,13 +8,28 @@ import socket
 import ssl
 import threading
 import unicodedata
-from concurrent.futures import Future, TimeoutError as FutureTimeoutError
 from pathlib import PurePosixPath
 from typing import Callable, Optional
 
 import aioftp
 from aioftp.errors import StatusCodeError
 
+from core.ftps_connection import (
+    build_ssl_context as build_ssl_context_impl,
+    close as close_impl,
+    close_async as close_async_impl,
+    connect as connect_impl,
+    connect_async as connect_async_impl,
+    run_coro as run_coro_impl,
+    start_loop as start_loop_impl,
+    stop_loop as stop_loop_impl,
+    validate_connection as validate_connection_impl,
+)
+from core.ftps_ftplib import (
+    close_ftplib_client as close_ftplib_client_impl,
+    connect_ftplib_explicit as connect_ftplib_explicit_impl,
+    get_ftplib_client as get_ftplib_client_impl,
+)
 from core.ftps_manifest import FTPSManifestStore
 from core.ftps_listing import (
     list_dir_detailed_ftplib_sync as list_dir_detailed_ftplib_sync_impl,
@@ -87,154 +102,36 @@ class FTPSSync:
     def _long_timeout_seconds() -> int:
         return FTPS_LONG_TIMEOUT_SECONDS
 
+    @staticmethod
+    def _timeout_seconds() -> int:
+        return FTPS_TIMEOUT_SECONDS
+
     def _start_loop(self) -> None:
-        if self._loop and self._loop_thread and self._loop_thread.is_alive():
-            return
-
-        loop = asyncio.new_event_loop()
-
-        def _runner() -> None:
-            asyncio.set_event_loop(loop)
-            loop.run_forever()
-
-        thread = threading.Thread(target=_runner, name="ftps-aioftp-loop", daemon=True)
-        thread.start()
-        self._loop = loop
-        self._loop_thread = thread
+        start_loop_impl(self)
 
     def _stop_loop(self) -> None:
-        if not self._loop:
-            return
-        try:
-            self._loop.call_soon_threadsafe(self._loop.stop)
-        except Exception:
-            pass
-        if self._loop_thread:
-            self._loop_thread.join(timeout=2)
-        self._loop = None
-        self._loop_thread = None
+        stop_loop_impl(self)
 
     def _run(self, coro, timeout: int = FTPS_LONG_TIMEOUT_SECONDS):
-        if not self._loop:
-            raise RuntimeError("FTPS loop is not started.")
-        fut: Future = asyncio.run_coroutine_threadsafe(coro, self._loop)
-        try:
-            return fut.result(timeout=timeout)
-        except FutureTimeoutError as exc:
-            fut.cancel()
-            raise TimeoutError(f"FTPS operation timed out after {timeout}s") from exc
+        return run_coro_impl(self, coro, timeout=timeout)
 
     def _build_ssl_context(self) -> ssl.SSLContext:
-        if self.settings.ftps_verify_tls:
-            return ssl.create_default_context()
-        return ssl._create_unverified_context()
+        return build_ssl_context_impl(self)
 
     def connect(self) -> None:
-        if not self.enabled:
-            return
-
-        if not self.settings.ftps_host or not self.settings.ftps_username:
-            raise ValueError("FTPS включен, но не заполнены host/username.")
-        if self.settings.ftps_port <= 0 or self.settings.ftps_port > 65535:
-            raise ValueError("FTPS_PORT должен быть в диапазоне 1..65535.")
-        self._passive_forced = False
-        self._effective_passive_mode = bool(self.settings.ftps_passive_mode)
-        if not self._effective_passive_mode:
-            # aioftp works in passive data mode. Force it to avoid hard failures.
-            self._effective_passive_mode = True
-            self._passive_forced = True
-        if self.settings.ftps_security_mode not in {"explicit", "implicit"}:
-            raise ValueError("FTPS security mode должен быть explicit или implicit.")
-
-        self._start_loop()
-        self._run(self._connect_async())
+        connect_impl(self)
 
     async def _connect_async(self) -> None:
-        if self.settings.ftps_security_mode == "implicit":
-            # aioftp handles implicit FTPS through preconfigured SSL context.
-            ssl_opt: ssl.SSLContext | bool | None = self._build_ssl_context()
-        else:
-            ssl_opt = None
-
-        encoding = (self.settings.ftps_encoding or "auto").strip().lower()
-        if encoding == "auto":
-            encoding = "utf-8"
-
-        client = aioftp.Client(
-            socket_timeout=FTPS_TIMEOUT_SECONDS,
-            connection_timeout=FTPS_TIMEOUT_SECONDS,
-            encoding=encoding,
-            ssl=ssl_opt,
-        )
-        await client.connect(host=self.settings.ftps_host, port=self.settings.ftps_port)
-        if self.settings.ftps_security_mode == "explicit":
-            await client.upgrade_to_tls(self._build_ssl_context())
-        await client.login(user=self.settings.ftps_username, password=self.settings.ftps_password or "")
-        self._client = client
+        await connect_async_impl(self)
 
     def close(self) -> None:
-        if self._loop and self._client is not None:
-            try:
-                self._run(self._close_async(), timeout=10)
-            except Exception:
-                pass
-        self._close_ftplib_client()
-        self._client = None
-        self._stop_loop()
+        close_impl(self)
 
     async def _close_async(self) -> None:
-        if not self._client:
-            return
-        try:
-            await self._client.quit()
-        except Exception:
-            try:
-                await self._client.close()
-            except Exception:
-                pass
+        await close_async_impl(self)
 
     def validate_connection(self) -> tuple[bool, str]:
-        if not self.enabled:
-            return True, "FTPS выключен."
-        try:
-            self.connect()
-            base_remote = self.ensure_remote_dir((self.settings.ftps_remote_dir or "/").strip() or "/")
-            tls_mode = "verify=on" if self.settings.ftps_verify_tls else "verify=off"
-            transfer_mode = "passive(auto)" if self._passive_forced else "passive"
-            secure_mode = self.settings.ftps_security_mode
-            encoding = (self.settings.ftps_encoding or "auto").strip().lower()
-            if encoding == "auto":
-                encoding = "utf-8"
-            forced_note = (
-                " Active mode недоступен в текущем FTPS клиенте, режим был автоматически переключен на passive."
-                if self._passive_forced
-                else ""
-            )
-            return (
-                True,
-                "FTPS: подключение установлено "
-                f"({tls_mode}; mode={transfer_mode}; security={secure_mode}; encoding={encoding}; "
-                f"hash_verify={'on' if self.settings.ftps_verify_hash else 'off'}). "
-                f"Каталог доступен: {base_remote}.{forced_note}",
-            )
-        except ssl.SSLCertVerificationError as exc:
-            return (
-                False,
-                "FTPS: ошибка TLS-сертификата. "
-                "Проверьте цепочку сертификатов на сервере или отключите проверку TLS в настройках FTPS. "
-                f"({exc})",
-            )
-        except (TimeoutError, socket.timeout) as exc:
-            return (
-                False,
-                "FTPS: таймаут чтения/ответа сервера. "
-                "Проверьте доступность хоста/порта, настройки firewall/NAT и режим FTPS на сервере. "
-                f"(timeout={FTPS_TIMEOUT_SECONDS}s; {exc})",
-            )
-        except Exception as exc:
-            return False, f"FTPS: ошибка подключения ({exc})"
-        finally:
-            self.close()
+        return validate_connection_impl(self)
 
     def prepare_channel_dir(self, channel_folder: str) -> None:
         if not self.enabled:
@@ -315,41 +212,13 @@ class FTPSSync:
         return entries
 
     def _connect_ftplib_explicit(self) -> ftplib.FTP_TLS:
-        if self.settings.ftps_security_mode != "explicit":
-            raise RuntimeError("ftplib fallback supports explicit FTPS mode only.")
-        context = self._build_ssl_context()
-        encoding = (self.settings.ftps_encoding or "auto").strip().lower()
-        if encoding == "auto":
-            encoding = "utf-8"
-        client = ftplib.FTP_TLS(timeout=FTPS_TIMEOUT_SECONDS, context=context, encoding=encoding)
-        client.connect(host=self.settings.ftps_host, port=self.settings.ftps_port, timeout=FTPS_TIMEOUT_SECONDS)
-        client.auth()
-        client.login(user=self.settings.ftps_username, passwd=self.settings.ftps_password or "")
-        client.prot_p()
-        client.set_pasv(True)
-        return client
+        return connect_ftplib_explicit_impl(self)
 
     def _close_ftplib_client(self) -> None:
-        if not self._ftplib_client:
-            return
-        try:
-            self._ftplib_client.quit()
-        except Exception:
-            try:
-                self._ftplib_client.close()
-            except Exception:
-                pass
-        self._ftplib_client = None
+        close_ftplib_client_impl(self)
 
     def _get_ftplib_client(self) -> ftplib.FTP_TLS:
-        if self._ftplib_client:
-            try:
-                self._ftplib_client.voidcmd("NOOP")
-                return self._ftplib_client
-            except Exception:
-                self._close_ftplib_client()
-        self._ftplib_client = self._connect_ftplib_explicit()
-        return self._ftplib_client
+        return get_ftplib_client_impl(self)
 
     def _manifest_remote_path(self) -> str:
         return self._manifest_store.manifest_remote_path()
