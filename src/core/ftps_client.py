@@ -16,6 +16,14 @@ import aioftp
 from aioftp.errors import StatusCodeError
 
 from core.ftps_manifest import FTPSManifestStore
+from core.ftps_name_resolver import (
+    find_remote_name_by_listing,
+    fuzzy_remote_candidates,
+    fuzzy_remote_candidates_in_dir,
+    get_remote_listing_names,
+    resolve_remote_name_from_listing,
+    sibling_channel_dirs,
+)
 from core.models import Settings
 
 FTPS_TIMEOUT_SECONDS = 30
@@ -57,6 +65,10 @@ class FTPSSync:
     @property
     def name(self) -> str:
         return "FTPS"
+
+    @staticmethod
+    def _list_timeout_seconds() -> int:
+        return FTPS_LIST_TIMEOUT_SECONDS
 
     def _start_loop(self) -> None:
         if self._loop and self._loop_thread and self._loop_thread.is_alive():
@@ -977,148 +989,19 @@ class FTPSSync:
             return False, f"remote_missing; remote={remote_path}; ftplib_check_failed={exc}"
 
     def _find_remote_name_by_listing(self, requested_file_name: str) -> str:
-        if not self._remote_channel_dir:
-            return ""
-        try:
-            listed = self._run(
-                self._list_names_async(self._remote_channel_dir),
-                timeout=FTPS_LIST_TIMEOUT_SECONDS,
-            )
-        except Exception:
-            return ""
-        if not listed:
-            return ""
-        requested_norm = self._normalize_name(requested_file_name)
-        lower_requested = requested_norm.casefold()
-        for name in listed:
-            if self._normalize_name(name) == requested_norm:
-                return name
-        for name in listed:
-            if self._normalize_name(name).casefold() == lower_requested:
-                return name
-        return ""
+        return find_remote_name_by_listing(self, requested_file_name)
 
     def _get_remote_listing_names(self) -> set[str]:
-        if self._remote_file_names:
-            return set(self._remote_file_names)
-        listed: set[str] = set()
-        if not self._remote_channel_dir:
-            return listed
-        try:
-            listed = self._run(
-                self._list_names_async(self._remote_channel_dir),
-                timeout=FTPS_LIST_TIMEOUT_SECONDS,
-            )
-        except Exception:
-            listed = set()
-        if not listed:
-            fallback_rows, _ = self._list_dir_detailed_ftplib_sync(self._remote_channel_dir, limit=1000)
-            listed = {str(item.get("name", "")).strip() for item in fallback_rows if str(item.get("name", "")).strip()}
-        if listed:
-            self._remote_file_names.update(listed)
-        return set(self._remote_file_names)
+        return get_remote_listing_names(self)
 
     def _fuzzy_remote_candidates(self, requested_file_name: str) -> list[str]:
-        listed = self._get_remote_listing_names()
-        if not listed:
-            return []
-        req_norm = self._normalize_name(requested_file_name)
-        req_lower = req_norm.casefold()
-        req_ext = os.path.splitext(req_lower)[1]
-        chapter_token = self._extract_chapter_token(requested_file_name)
-        ranked: list[tuple[int, str]] = []
-        for name in listed:
-            norm = self._normalize_name(name)
-            lower = norm.casefold()
-            if req_ext and not lower.endswith(req_ext):
-                continue
-            score = 0
-            if chapter_token:
-                token_re = rf"(^|[^0-9])0*{re.escape(chapter_token)}([^0-9]|$)"
-                if re.search(token_re, lower):
-                    score += 10
-                if lower.startswith(chapter_token) or lower.startswith(chapter_token.zfill(4)):
-                    score += 6
-            if lower[:16] == req_lower[:16]:
-                score += 4
-            if score > 0:
-                ranked.append((score, name))
-        ranked.sort(key=lambda item: (-item[0], self._normalize_name(item[1]).casefold()))
-        return [name for _, name in ranked]
+        return fuzzy_remote_candidates(self, requested_file_name)
 
     def _fuzzy_remote_candidates_in_dir(self, remote_dir: str, requested_file_name: str) -> list[str]:
-        if not remote_dir:
-            return []
-        listed: set[str] = set()
-        try:
-            listed = self._run(
-                self._list_names_async(remote_dir),
-                timeout=FTPS_LIST_TIMEOUT_SECONDS,
-            )
-        except Exception:
-            listed = set()
-        if not listed:
-            fallback_rows, _ = self._list_dir_detailed_ftplib_sync(remote_dir, limit=1000)
-            listed = {str(item.get("name", "")).strip() for item in fallback_rows if str(item.get("name", "")).strip()}
-        if not listed:
-            return []
-        req_norm = self._normalize_name(requested_file_name)
-        req_lower = req_norm.casefold()
-        req_ext = os.path.splitext(req_lower)[1]
-        chapter_token = self._extract_chapter_token(requested_file_name)
-        ranked: list[tuple[int, str]] = []
-        for name in listed:
-            norm = self._normalize_name(name)
-            lower = norm.casefold()
-            if req_ext and not lower.endswith(req_ext):
-                continue
-            score = 0
-            if chapter_token:
-                token_re = rf"(^|[^0-9])0*{re.escape(chapter_token)}([^0-9]|$)"
-                if re.search(token_re, lower):
-                    score += 10
-                if lower.startswith(chapter_token) or lower.startswith(chapter_token.zfill(4)):
-                    score += 6
-            if lower[:16] == req_lower[:16]:
-                score += 4
-            if score > 0:
-                ranked.append((score, name))
-        ranked.sort(key=lambda item: (-item[0], self._normalize_name(item[1]).casefold()))
-        return [name for _, name in ranked]
+        return fuzzy_remote_candidates_in_dir(self, remote_dir, requested_file_name)
 
     def _sibling_channel_dirs(self) -> list[str]:
-        base_dir = (self._base_remote_dir or "").strip()
-        if not base_dir:
-            return []
-        entries: list[tuple[str, str]] = []
-        try:
-            entries = self._run(
-                self._list_dir_entries_async(base_dir),
-                timeout=FTPS_LIST_TIMEOUT_SECONDS,
-            )
-        except Exception:
-            entries = []
-        if not entries:
-            fallback_rows, source = self._list_dir_detailed_ftplib_sync(base_dir, limit=500)
-            if source:
-                entries = [
-                    (
-                        str(item.get("name", "")),
-                        str(item.get("type", "")) if str(item.get("type", "")).strip() else "dir",
-                    )
-                    for item in fallback_rows
-                    if str(item.get("name", "")).strip()
-                ]
-        dirs: list[str] = []
-        for name, item_type in entries:
-            if item_type != "dir":
-                continue
-            if base_dir == "/":
-                dirs.append(f"/{name}")
-            else:
-                dirs.append(posixpath.join(base_dir.rstrip("/"), name))
-        current = (self._remote_channel_dir or "").rstrip("/")
-        return [item for item in dirs if item.rstrip("/") != current]
+        return sibling_channel_dirs(self)
 
     def list_remote_entries(self, remote_dir: str, limit: int = 200) -> list[dict]:
         if not self.enabled:
@@ -1179,20 +1062,7 @@ class FTPSSync:
         return rows
 
     def _resolve_remote_name_from_listing(self, requested_file_name: str) -> str:
-        requested_norm = self._normalize_name(requested_file_name)
-        lower_requested = requested_norm.casefold()
-
-        for name in self._remote_file_names:
-            if self._normalize_name(name) == requested_norm:
-                return name
-        for name in self._remote_file_names:
-            if self._normalize_name(name).casefold() == lower_requested:
-                return name
-
-        listed_name = self._find_remote_name_by_listing(requested_file_name)
-        if listed_name:
-            self._remote_file_names.add(listed_name)
-        return listed_name
+        return resolve_remote_name_from_listing(self, requested_file_name)
 
     async def _remote_exists_async(self, remote_file_path: str) -> bool:
         if not self._client:
