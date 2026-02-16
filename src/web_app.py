@@ -21,6 +21,7 @@ from core.downloader import run_downloader, run_remote_uploader
 from core.models import Settings
 from core.telegram_client import create_telegram_client, is_audio_message, resolve_channel_entity
 from ftps_ops import fetch_ftps_preview, ftps_audit_selected_channel
+from telegram_ops import fetch_preview, pick_range_ids, resolve_last_downloaded_message_id
 from web_form_ops import (
     _build_settings,
     _clear_phone_code_hash as _clear_phone_code_hash_base,
@@ -686,50 +687,7 @@ async def _validate_channel(settings: Settings) -> tuple[bool, str]:
 
 
 async def _fetch_preview(settings: Settings, limit: int = PREVIEW_LIMIT) -> tuple[bool, str, list[dict]]:
-    client = create_telegram_client(settings)
-    await client.connect()
-
-    try:
-        if not await client.is_user_authorized():
-            return False, "Сначала выполните авторизацию.", []
-
-        channel = await resolve_channel_entity(client, settings.channel)
-        channel_id = utils.get_peer_id(channel)
-        db = AppDatabase(DB_PATH)
-
-        items: list[dict] = []
-        index = 1
-        try:
-            async for message in client.iter_messages(channel, limit=limit, reverse=True):
-                if not is_audio_message(message):
-                    continue
-
-                file_name = ""
-                if message.file and getattr(message.file, "name", None):
-                    file_name = str(message.file.name)
-
-                title = file_name or (message.message or "audio")
-                date_text = message.date.strftime("%Y-%m-%d %H:%M") if message.date else ""
-                is_downloaded = db.already_downloaded(channel_id, int(message.id))
-                items.append(
-                    {
-                        "index": index,
-                        "message_id": message.id,
-                        "title": title.replace("\n", " ")[:80],
-                        "date": date_text,
-                        "downloaded": is_downloaded,
-                        "remote_uploaded": db.is_remote_uploaded(channel_id, int(message.id)),
-                    }
-                )
-                index += 1
-        finally:
-            db.close()
-
-        return True, f"Найдено аудио: {len(items)}", items
-    except Exception as exc:
-        return False, f"Ошибка предпросмотра: {exc}", []
-    finally:
-        await client.disconnect()
+    return await fetch_preview(settings, DB_PATH, limit=limit)
 
 
 async def _fetch_ftps_preview(settings: Settings, limit: int = 300) -> tuple[bool, str, list[dict]]:
@@ -737,18 +695,7 @@ async def _fetch_ftps_preview(settings: Settings, limit: int = 300) -> tuple[boo
 
 
 async def _resolve_last_downloaded_message_id(settings: Settings) -> int:
-    client = create_telegram_client(settings)
-    await client.connect()
-    try:
-        channel = await resolve_channel_entity(client, settings.channel)
-        channel_id = utils.get_peer_id(channel)
-        db = AppDatabase(DB_PATH)
-        try:
-            return db.get_last_downloaded_message_id(channel_id)
-        finally:
-            db.close()
-    finally:
-        await client.disconnect()
+    return await resolve_last_downloaded_message_id(settings, DB_PATH)
 
 
 async def _ftps_audit_selected_channel(settings: Settings) -> tuple[bool, str]:
@@ -756,24 +703,7 @@ async def _ftps_audit_selected_channel(settings: Settings) -> tuple[bool, str]:
 
 
 def _pick_range_ids(items: list[dict], from_index_raw: str, to_index_raw: str) -> Optional[set[int]]:
-    if not from_index_raw and not to_index_raw:
-        return None
-
-    if not items:
-        return set()
-
-    from_index = _safe_int(from_index_raw, 1)
-    to_index = _safe_int(to_index_raw, len(items))
-
-    if from_index <= 0:
-        from_index = 1
-    if to_index <= 0:
-        to_index = len(items)
-    if from_index > to_index:
-        from_index, to_index = to_index, from_index
-
-    selected = {int(i["message_id"]) for i in items if from_index <= int(i["index"]) <= to_index}
-    return selected
+    return pick_range_ids(items, from_index_raw, to_index_raw, _safe_int)
 
 
 def _start_worker(
