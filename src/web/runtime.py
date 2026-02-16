@@ -208,13 +208,13 @@ def _status_payload() -> dict:
 
 
 def _set_preview_cache(value: list[dict]) -> None:
-    global preview_cache
-    preview_cache = value
+    preview_cache.clear()
+    preview_cache.extend(value or [])
 
 
 def _set_ftps_remote_preview_cache(value: list[dict]) -> None:
-    global ftps_remote_preview_cache
-    ftps_remote_preview_cache = value
+    ftps_remote_preview_cache.clear()
+    ftps_remote_preview_cache.extend(value or [])
 
 
 def _set_ftps_remote_preview_meta(value: str) -> None:

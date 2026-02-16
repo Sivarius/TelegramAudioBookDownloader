@@ -23,6 +23,7 @@ from web.channels import (
     run_periodic_checks_once as channels_run_periodic_checks_once,
     upsert_current_channel_preference as channels_upsert_current_channel_preference,
 )
+import web.runtime as runtime_data
 from web.runtime import (
     _set_auth_status,
     _set_debug_mode,
@@ -38,11 +39,8 @@ from web.runtime import (
     configure_runtime_paths,
     debug_log_buffer,
     debug_log_lock,
-    ftps_remote_preview_cache,
-    ftps_remote_preview_meta,
     ftps_status,
     get_status_version,
-    preview_cache,
     proxy_status,
     sftp_status,
     status_cond,
@@ -338,9 +336,9 @@ def _render(form: dict, message: str = "", need_code: bool = False, need_passwor
         message=message,
         need_code=need_code,
         need_password=need_password,
-        preview=preview_cache,
-        ftps_remote_preview=ftps_remote_preview_cache,
-        ftps_remote_preview_meta=ftps_remote_preview_meta,
+        preview=runtime_data.preview_cache,
+        ftps_remote_preview=runtime_data.ftps_remote_preview_cache,
+        ftps_remote_preview_meta=runtime_data.ftps_remote_preview_meta,
     )
 
 
@@ -364,11 +362,11 @@ def _register_basic_routes() -> None:
             "upsert_current_channel_preference": _upsert_current_channel_preference,
             "fetch_preview": _fetch_preview,
             "fetch_ftps_preview": _fetch_ftps_preview,
-            "get_preview_cache": lambda: preview_cache,
+            "get_preview_cache": lambda: runtime_data.preview_cache,
             "set_preview_cache": lambda value: _set_preview_cache(value),
-            "get_ftps_remote_preview_cache": lambda: ftps_remote_preview_cache,
+            "get_ftps_remote_preview_cache": lambda: runtime_data.ftps_remote_preview_cache,
             "set_ftps_remote_preview_cache": lambda value: _set_ftps_remote_preview_cache(value),
-            "get_ftps_remote_preview_meta": lambda: ftps_remote_preview_meta,
+            "get_ftps_remote_preview_meta": lambda: runtime_data.ftps_remote_preview_meta,
             "set_ftps_remote_preview_meta": lambda value: _set_ftps_remote_preview_meta(value),
             "proxy_status": proxy_status,
             "sftp_status": sftp_status,
@@ -412,7 +410,7 @@ register_action_routes(
         "set_ftps_status": _set_ftps_status,
         "set_preview_cache": _set_preview_cache,
         "set_status": _set_status,
-        "get_preview_cache": lambda: preview_cache,
+        "get_preview_cache": lambda: runtime_data.preview_cache,
         "proxy_status": proxy_status,
         "sftp_status": sftp_status,
         "ftps_status": ftps_status,
