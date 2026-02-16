@@ -147,6 +147,10 @@ def _build_settings(form: dict, require_channel: bool = True) -> Settings:
         raise ValueError("Для FTPS заполните host и username.")
     if form["use_sftp"] and form["use_ftps"]:
         raise ValueError("Одновременно можно включить только один протокол: SFTP или FTPS.")
+    ftps_passive_mode = bool(form["ftps_passive_mode"])
+    if form["use_ftps"] and not ftps_passive_mode:
+        # Active mode is not supported by current aioftp flow.
+        ftps_passive_mode = True
 
     return Settings(
         api_id=api_id,
@@ -174,7 +178,7 @@ def _build_settings(form: dict, require_channel: bool = True) -> Settings:
         ftps_remote_dir=form["ftps_remote_dir"] or "/uploads",
         ftps_encoding=ftps_encoding,
         ftps_verify_tls=bool(form["ftps_verify_tls"]),
-        ftps_passive_mode=bool(form["ftps_passive_mode"]),
+        ftps_passive_mode=ftps_passive_mode,
         ftps_security_mode=ftps_security_mode,
         ftps_upload_concurrency=ftps_upload_concurrency,
         cleanup_local_after_ftps=bool(form["cleanup_local_after_ftps"]),
@@ -183,6 +187,8 @@ def _build_settings(form: dict, require_channel: bool = True) -> Settings:
 
 
 def _store_settings(db_path: Path, settings: Settings) -> None:
+    if settings.use_ftps and not settings.ftps_passive_mode:
+        settings.ftps_passive_mode = True
     db = AppDatabase(db_path)
     try:
         db.store_settings(settings)

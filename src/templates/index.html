@@ -271,6 +271,7 @@
                   <div class="check-row">
                     <input id="ftps_passive_mode" type="checkbox" name="ftps_passive_mode" {% if form.ftps_passive_mode %}checked{% endif %}>
                     <label for="ftps_passive_mode">Режим передачи: пассивный</label>
+                    <span class="help" tabindex="0" data-tip="Active mode не поддерживается текущей реализацией. При FTPS включается passive.">?</span>
                   </div>
                 </div>
                 <div class="field-sm">
@@ -324,6 +325,7 @@
           <div class="status-pill" id="status-ftps">
             FTPS:
             {% if ftps_status.enabled %}{% if ftps_status.available %}<span class="run">подключение установлено</span>{% else %}<span class="stop">ошибка подключения</span>{% endif %}{% else %}<span class="stop">не используется</span>{% endif %}
+            ({{ ftps_status.message }})
           </div>
           <div class="status-pill" id="status-sftp">
             SFTP:
@@ -372,6 +374,7 @@
             <div id="status-ftps-check-file">FTPS текущий файл: {{ status.ftps_check_current_file }}</div>
             <div id="status-ftps-check-last">FTPS last: {{ status.ftps_check_last_info }}</div>
             <div id="status-ftps-check-missing">FTPS missing paths: {% if status.ftps_check_missing_examples %}{{ status.ftps_check_missing_examples|join(' | ') }}{% endif %}</div>
+            <div id="status-ftps-message">FTPS сообщение: {{ ftps_status.message }}</div>
             <div id="result-message">{% if message %}Результат: {{ message }}{% endif %}</div>
             <div id="need-code-hint">{% if need_code %}Требуется код подтверждения. Введите поле "Код из Telegram" и нажмите "Авторизоваться" снова.{% endif %}</div>
             <div id="need-password-hint">{% if need_password %}Требуется пароль 2FA. Введите поле "Пароль 2FA" и нажмите "Авторизоваться" снова.{% endif %}</div>

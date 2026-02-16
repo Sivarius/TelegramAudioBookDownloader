@@ -168,6 +168,9 @@ def load_settings(db: AppDatabase) -> Settings:
 
     if use_ftps and (not ftps_host or not ftps_username):
         raise ValueError("USE_FTPS is enabled but FTPS_HOST/FTPS_USERNAME is empty.")
+    if use_ftps and not ftps_passive_mode:
+        # Active mode is not supported by current aioftp transfer flow.
+        ftps_passive_mode = True
 
     if use_sftp and use_ftps:
         raise ValueError("USE_SFTP and USE_FTPS cannot be enabled together.")

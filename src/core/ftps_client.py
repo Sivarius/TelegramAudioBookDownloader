@@ -35,6 +35,8 @@ class FTPSSync:
         self._loop: Optional[asyncio.AbstractEventLoop] = None
         self._loop_thread: Optional[threading.Thread] = None
         self._ftplib_client: Optional[ftplib.FTP_TLS] = None
+        self._passive_forced = False
+        self._effective_passive_mode = True
         self._manifest_store = FTPSManifestStore(
             get_ftplib_client=self._get_ftplib_client,
             close_ftplib_client=self._close_ftplib_client,
@@ -106,8 +108,12 @@ class FTPSSync:
             raise ValueError("FTPS включен, но не заполнены host/username.")
         if self.settings.ftps_port <= 0 or self.settings.ftps_port > 65535:
             raise ValueError("FTPS_PORT должен быть в диапазоне 1..65535.")
-        if not self.settings.ftps_passive_mode:
-            raise ValueError("FTPS active mode не поддерживается aioftp. Включите пассивный режим.")
+        self._passive_forced = False
+        self._effective_passive_mode = bool(self.settings.ftps_passive_mode)
+        if not self._effective_passive_mode:
+            # aioftp works in passive data mode. Force it to avoid hard failures.
+            self._effective_passive_mode = True
+            self._passive_forced = True
         if self.settings.ftps_security_mode not in {"explicit", "implicit"}:
             raise ValueError("FTPS security mode должен быть explicit или implicit.")
 
@@ -165,17 +171,22 @@ class FTPSSync:
             self.connect()
             base_remote = self.ensure_remote_dir((self.settings.ftps_remote_dir or "/").strip() or "/")
             tls_mode = "verify=on" if self.settings.ftps_verify_tls else "verify=off"
-            transfer_mode = "passive"
+            transfer_mode = "passive(auto)" if self._passive_forced else "passive"
             secure_mode = self.settings.ftps_security_mode
             encoding = (self.settings.ftps_encoding or "auto").strip().lower()
             if encoding == "auto":
                 encoding = "utf-8"
+            forced_note = (
+                " Active mode недоступен в текущем FTPS клиенте, режим был автоматически переключен на passive."
+                if self._passive_forced
+                else ""
+            )
             return (
                 True,
                 "FTPS: подключение установлено "
                 f"({tls_mode}; mode={transfer_mode}; security={secure_mode}; encoding={encoding}; "
                 f"hash_verify={'on' if self.settings.ftps_verify_hash else 'off'}). "
-                f"Каталог доступен: {base_remote}",
+                f"Каталог доступен: {base_remote}.{forced_note}",
             )
         except ssl.SSLCertVerificationError as exc:
             return (
@@ -683,6 +694,39 @@ class FTPSSync:
             timeout=max(FTPS_LONG_TIMEOUT_SECONDS, 240),
         )
 
+    def _verify_remote_with_diagnostics(
+        self,
+        local_file_path: str,
+        remote_path: str,
+        verify_hash: bool = False,
+        local_hash: str = "",
+    ) -> tuple[bool, bool, str, str]:
+        size_match, hash_match = self.verify_remote_file(
+            local_file_path,
+            remote_path,
+            verify_hash=verify_hash,
+            local_hash=local_hash,
+        )
+        local_hash_dbg = local_hash.strip() if local_hash else ""
+        remote_hash_dbg = ""
+        if verify_hash and size_match and not hash_match:
+            forced_local_hash = self._sha256_local(local_file_path)
+            size_match, hash_match = self.verify_remote_file(
+                local_file_path,
+                remote_path,
+                verify_hash=True,
+                local_hash=forced_local_hash,
+            )
+            local_hash_dbg = forced_local_hash
+            try:
+                remote_hash_dbg, _ = self._run(
+                    self._sha256_remote_async(remote_path),
+                    timeout=max(FTPS_LONG_TIMEOUT_SECONDS, 240),
+                )
+            except Exception:
+                remote_hash_dbg = ""
+        return size_match, hash_match, local_hash_dbg, remote_hash_dbg
+
     async def _verify_remote_file_async(
         self,
         local_file_path: str,
@@ -737,6 +781,30 @@ class FTPSSync:
                 hash_for_manifest = (local_hash or "").strip().lower() or self._sha256_local(local_file_path)
             self._record_verified_manifest_locked(local_file_path, remote_verified_path, hash_for_manifest)
 
+        def _verify_candidate(remote_path: str, matched_by: str) -> tuple[bool, str]:
+            size_match, hash_match, local_hash_dbg, remote_hash_dbg = self._verify_remote_with_diagnostics(
+                local_file_path=local_file_path,
+                remote_path=remote_path,
+                verify_hash=verify_hash,
+                local_hash=local_hash,
+            )
+            verified = size_match and hash_match
+            if verified:
+                _remember_verified(remote_path, os.path.basename(remote_path))
+                return (
+                    True,
+                    f"remote={remote_path}; size_match={size_match}; hash_match={hash_match}; "
+                    f"verified=True; matched_by={matched_by}",
+                )
+            return (
+                False,
+                f"remote_present_mismatch; remote={remote_path}; "
+                f"size_match={size_match}; hash_match={hash_match}; "
+                f"local_hash={local_hash_dbg[:12] if local_hash_dbg else ''}; "
+                f"remote_hash={remote_hash_dbg[:12] if remote_hash_dbg else ''}; "
+                f"matched_by={matched_by}",
+            )
+
         manifest_ok, manifest_remote_path = self._manifest_match_locked(
             local_file_path,
             verify_hash=verify_hash,
@@ -767,25 +835,8 @@ class FTPSSync:
         hinted_path = self._normalize_remote_dir(remote_path_hint)
         if hinted_path:
             try:
-                size_match, hash_match = self.verify_remote_file(
-                    local_file_path,
-                    hinted_path,
-                    verify_hash=verify_hash,
-                    local_hash=local_hash,
-                )
-                verified = size_match and hash_match
-                if verified:
-                    _remember_verified(hinted_path, file_name)
-                    return (
-                        True,
-                        f"remote={hinted_path}; size_match={size_match}; hash_match={hash_match}; "
-                        "verified=True; matched_by=db_cache",
-                    )
-                return (
-                    False,
-                    f"remote_present_mismatch; remote={hinted_path}; "
-                    f"size_match={size_match}; hash_match={hash_match}; matched_by=db_cache",
-                )
+                verified, info = _verify_candidate(hinted_path, "db_cache")
+                return verified, info
             except Exception:
                 ok_fb, info_fb = self._check_remote_file_status_ftplib(
                     local_file_path,
@@ -805,46 +856,8 @@ class FTPSSync:
             # stat/stream works. Try exact path before declaring remote_missing.
             direct_path = posixpath.join(self._remote_channel_dir, file_name)
             try:
-                size_match, hash_match = self.verify_remote_file(
-                    local_file_path,
-                    direct_path,
-                    verify_hash=verify_hash,
-                    local_hash=local_hash,
-                )
-                local_hash_dbg = local_hash.strip() if local_hash else ""
-                remote_hash_dbg = ""
-                if verify_hash and size_match and not hash_match:
-                    forced_local_hash = self._sha256_local(local_file_path)
-                    size_match, hash_match = self.verify_remote_file(
-                        local_file_path,
-                        direct_path,
-                        verify_hash=True,
-                        local_hash=forced_local_hash,
-                    )
-                    local_hash_dbg = forced_local_hash
-                    try:
-                        remote_hash_dbg, _ = self._run(
-                            self._sha256_remote_async(direct_path),
-                            timeout=max(FTPS_LONG_TIMEOUT_SECONDS, 240),
-                        )
-                    except Exception:
-                        remote_hash_dbg = ""
-                verified = size_match and hash_match
-                if verified:
-                    _remember_verified(direct_path, file_name)
-                    return (
-                        True,
-                        f"remote={direct_path}; size_match={size_match}; hash_match={hash_match}; "
-                        "verified=True; matched_by=direct_path",
-                    )
-                return (
-                    False,
-                    f"remote_present_mismatch; remote={direct_path}; "
-                    f"size_match={size_match}; hash_match={hash_match}; "
-                    f"local_hash={local_hash_dbg[:12] if local_hash_dbg else ''}; "
-                    f"remote_hash={remote_hash_dbg[:12] if remote_hash_dbg else ''}; "
-                    "matched_by=direct_path",
-                )
+                verified, info = _verify_candidate(direct_path, "direct_path")
+                return verified, info
             except Exception:
                 pass
 
@@ -853,95 +866,25 @@ class FTPSSync:
             for candidate_name in candidates[:15]:
                 candidate_path = posixpath.join(self._remote_channel_dir, candidate_name)
                 try:
-                    size_match, hash_match = self.verify_remote_file(
-                        local_file_path,
-                        candidate_path,
-                        verify_hash=verify_hash,
-                        local_hash=local_hash,
-                    )
+                    verified, info = _verify_candidate(candidate_path, "fuzzy")
                 except Exception:
                     continue
-                local_hash_dbg = local_hash.strip() if local_hash else ""
-                remote_hash_dbg = ""
-                if verify_hash and size_match and not hash_match:
-                    forced_local_hash = self._sha256_local(local_file_path)
-                    size_match, hash_match = self.verify_remote_file(
-                        local_file_path,
-                        candidate_path,
-                        verify_hash=True,
-                        local_hash=forced_local_hash,
-                    )
-                    local_hash_dbg = forced_local_hash
-                    try:
-                        remote_hash_dbg, _ = self._run(
-                            self._sha256_remote_async(candidate_path),
-                            timeout=max(FTPS_LONG_TIMEOUT_SECONDS, 240),
-                        )
-                    except Exception:
-                        remote_hash_dbg = ""
-                verified = size_match and hash_match
                 if verified:
-                    _remember_verified(candidate_path, candidate_name)
-                    return (
-                        True,
-                        f"remote={candidate_path}; size_match={size_match}; hash_match={hash_match}; "
-                        "verified=True; matched_by=fuzzy",
-                    )
+                    return verified, info
                 if not present_mismatch_info:
-                    present_mismatch_info = (
-                        f"remote_present_mismatch; remote={candidate_path}; "
-                        f"size_match={size_match}; hash_match={hash_match}; "
-                        f"local_hash={local_hash_dbg[:12] if local_hash_dbg else ''}; "
-                        f"remote_hash={remote_hash_dbg[:12] if remote_hash_dbg else ''}; "
-                        "matched_by=fuzzy"
-                    )
+                    present_mismatch_info = info
             for sibling_dir in self._sibling_channel_dirs():
                 sibling_candidates = self._fuzzy_remote_candidates_in_dir(sibling_dir, file_name)
                 for candidate_name in sibling_candidates[:8]:
                     candidate_path = posixpath.join(sibling_dir, candidate_name)
                     try:
-                        size_match, hash_match = self.verify_remote_file(
-                            local_file_path,
-                            candidate_path,
-                            verify_hash=verify_hash,
-                            local_hash=local_hash,
-                        )
+                        verified, info = _verify_candidate(candidate_path, "sibling_dir_fuzzy")
                     except Exception:
                         continue
-                    local_hash_dbg = local_hash.strip() if local_hash else ""
-                    remote_hash_dbg = ""
-                    if verify_hash and size_match and not hash_match:
-                        forced_local_hash = self._sha256_local(local_file_path)
-                        size_match, hash_match = self.verify_remote_file(
-                            local_file_path,
-                            candidate_path,
-                            verify_hash=True,
-                            local_hash=forced_local_hash,
-                        )
-                        local_hash_dbg = forced_local_hash
-                        try:
-                            remote_hash_dbg, _ = self._run(
-                                self._sha256_remote_async(candidate_path),
-                                timeout=max(FTPS_LONG_TIMEOUT_SECONDS, 240),
-                            )
-                        except Exception:
-                            remote_hash_dbg = ""
-                    verified = size_match and hash_match
                     if verified:
-                        _remember_verified(candidate_path, candidate_name)
-                        return (
-                            True,
-                            f"remote={candidate_path}; size_match={size_match}; hash_match={hash_match}; "
-                            "verified=True; matched_by=sibling_dir_fuzzy",
-                        )
+                        return verified, info
                     if not present_mismatch_info:
-                        present_mismatch_info = (
-                            f"remote_present_mismatch; remote={candidate_path}; "
-                            f"size_match={size_match}; hash_match={hash_match}; "
-                            f"local_hash={local_hash_dbg[:12] if local_hash_dbg else ''}; "
-                            f"remote_hash={remote_hash_dbg[:12] if remote_hash_dbg else ''}; "
-                            "matched_by=sibling_dir_fuzzy"
-                        )
+                        present_mismatch_info = info
             remote_path = posixpath.join(self._remote_channel_dir, file_name)
             if present_mismatch_info:
                 return False, present_mismatch_info
@@ -965,41 +908,8 @@ class FTPSSync:
             return False, f"remote_missing; remote={remote_path}"
         remote_path = posixpath.join(self._remote_channel_dir, remote_name)
         try:
-            size_match, hash_match = self.verify_remote_file(
-                local_file_path,
-                remote_path,
-                verify_hash=verify_hash,
-                local_hash=local_hash,
-            )
-            local_hash_dbg = local_hash.strip() if local_hash else ""
-            remote_hash_dbg = ""
-            if verify_hash and size_match and not hash_match:
-                forced_local_hash = self._sha256_local(local_file_path)
-                size_match, hash_match = self.verify_remote_file(
-                    local_file_path,
-                    remote_path,
-                    verify_hash=True,
-                    local_hash=forced_local_hash,
-                )
-                local_hash_dbg = forced_local_hash
-                try:
-                    remote_hash_dbg, _ = self._run(
-                        self._sha256_remote_async(remote_path),
-                        timeout=max(FTPS_LONG_TIMEOUT_SECONDS, 240),
-                    )
-                except Exception:
-                    remote_hash_dbg = ""
-            verified = size_match and hash_match
-            if verified:
-                _remember_verified(remote_path, file_name)
-            return (
-                verified,
-                "remote="
-                f"{remote_path}; size_match={size_match}; hash_match={hash_match}; "
-                f"local_hash={local_hash_dbg[:12] if local_hash_dbg else ''}; "
-                f"remote_hash={remote_hash_dbg[:12] if remote_hash_dbg else ''}; "
-                f"verified={verified}",
-            )
+            verified, info = _verify_candidate(remote_path, "final")
+            return verified, info
         except Exception as verify_exc:
             ok_fb, info_fb = self._check_remote_file_status_ftplib(
                 local_file_path,

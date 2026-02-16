@@ -174,7 +174,8 @@ export function applyStatusPayload(status) {
     ftpsText = status.ftps_available ? 'подключение установлено' : 'ошибка подключения';
     ftpsClass = status.ftps_available ? 'run' : 'stop';
   }
-  setHtml('status-ftps', `FTPS: <span class="${ftpsClass}">${ftpsText}</span>`);
+  setHtml('status-ftps', `FTPS: <span class="${ftpsClass}">${ftpsText}</span> (${escapeHtml(status.ftps_message || '')})`);
+  setText('status-ftps-message', `FTPS сообщение: ${status.ftps_message || ''}`);
 
   const ftpsCheckRunning = !!status.ftps_check_running;
   setHtml('status-ftps-check-state', `FTPS проверка: <span class="${ftpsCheckRunning ? 'run' : 'stop'}">${ftpsCheckRunning ? 'выполняется' : 'не запущена'}</span>`);
