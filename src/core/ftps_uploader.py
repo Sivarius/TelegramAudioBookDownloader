@@ -26,6 +26,9 @@ def upload_file_if_needed(
     with sync._io_lock:
         attempts = 3
         last_exc: Optional[Exception] = None
+        op_timeout = max(sync._timeout_seconds() * 3, 90)
+        if verify_hash and sync.settings.ftps_verify_hash:
+            op_timeout = max(op_timeout, max(sync._long_timeout_seconds(), 240))
         for attempt in range(1, attempts + 1):
             try:
                 remote_path = posixpath.join(sync._remote_channel_dir, file_name)
@@ -38,7 +41,7 @@ def upload_file_if_needed(
                         verify_hash,
                         force_upload,
                     ),
-                    timeout=max(sync._long_timeout_seconds(), 240),
+                    timeout=op_timeout,
                 )
                 return uploaded, reason
             except Exception as exc:
@@ -83,7 +86,8 @@ async def upload_file_if_needed_async(
         # MLST "550 can't be listed" may desync control replies and break next EPSV.
         # Use isolated ftplib control channel for existence probe instead.
         try:
-            ok_fb, info_fb = sync._check_remote_file_status_ftplib(
+            ok_fb, info_fb = await _check_remote_file_status_ftplib_with_timeout(
+                sync,
                 local_file_path,
                 remote_path,
                 verify_hash=False,
@@ -104,7 +108,8 @@ async def upload_file_if_needed_async(
         if manifest_ok:
             manifest_path = manifest_remote_path or remote_path
             try:
-                ok_fb, _ = sync._check_remote_file_status_ftplib(
+                ok_fb, _ = await _check_remote_file_status_ftplib_with_timeout(
+                    sync,
                     local_file_path,
                     manifest_path,
                     verify_hash=False,
@@ -153,21 +158,29 @@ async def upload_file_if_needed_async(
         except Exception as exc:
             if not _is_control_desync_error(exc):
                 raise
-            await asyncio.to_thread(
-                _upload_via_ftplib_sync,
-                sync,
-                local_file_path,
-                remote_path,
-                progress_callback,
-                total_size,
-            )
+            try:
+                await asyncio.wait_for(
+                    asyncio.to_thread(
+                        _upload_via_ftplib_sync,
+                        sync,
+                        local_file_path,
+                        remote_path,
+                        progress_callback,
+                        total_size,
+                    ),
+                    timeout=max(sync._timeout_seconds() * 4, 120),
+                )
+            except asyncio.TimeoutError as timeout_exc:
+                sync._close_ftplib_client()
+                raise TimeoutError("FTPS ftplib fallback upload timed out") from timeout_exc
             used_ftplib_fallback = True
         if used_ftplib_fallback and progress_callback:
             progress_callback(total_size, total_size)
         sync._remote_file_names.add(file_name)
         uploaded = True
 
-    ok_fb, _ = sync._check_remote_file_status_ftplib(
+    ok_fb, _ = await _check_remote_file_status_ftplib_with_timeout(
+        sync,
         local_file_path,
         remote_path,
         verify_hash=verify_hash,
@@ -252,3 +265,23 @@ def _upload_via_ftplib_sync(
     except Exception:
         sync._close_ftplib_client()
         raise
+
+
+async def _check_remote_file_status_ftplib_with_timeout(
+    sync,
+    local_file_path: str,
+    remote_path: str,
+    verify_hash: bool,
+    local_hash: str,
+    timeout: int = 45,
+) -> tuple[bool, str]:
+    return await asyncio.wait_for(
+        asyncio.to_thread(
+            sync._check_remote_file_status_ftplib,
+            local_file_path,
+            remote_path,
+            verify_hash,
+            local_hash,
+        ),
+        timeout=timeout,
+    )

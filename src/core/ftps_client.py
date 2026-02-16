@@ -67,7 +67,9 @@ class FTPSSync:
         self._base_remote_dir = ""
         self._remote_channel_dir = ""
         self._remote_file_names: set[str] = set()
-        self._io_lock = threading.Lock()
+        # Reentrant lock is required because retry/reconnect flow may call
+        # prepare_channel_dir while upload_file_if_needed already holds the lock.
+        self._io_lock = threading.RLock()
         self._loop: Optional[asyncio.AbstractEventLoop] = None
         self._loop_thread: Optional[threading.Thread] = None
         self._ftplib_client: Optional[ftplib.FTP_TLS] = None
@@ -151,7 +153,11 @@ class FTPSSync:
             self._remote_channel_dir = channel_remote
             self._manifest_store.reset(channel_remote)
             names: set[str] = set()
-            fallback_rows, _ = self._list_dir_detailed_ftplib_sync(channel_remote, limit=10000)
+            fallback_rows, _ = self._list_dir_detailed_ftplib_sync_safe(
+                channel_remote,
+                limit=10000,
+                timeout=25,
+            )
             names = {
                 str(item.get("name", "")).strip()
                 for item in fallback_rows
@@ -167,6 +173,33 @@ class FTPSSync:
                     names = set()
             self._remote_file_names = names
             self._load_manifest_locked()
+
+    def _list_dir_detailed_ftplib_sync_safe(
+        self,
+        remote_dir: str,
+        limit: int = 500,
+        timeout: int = 25,
+    ) -> tuple[list[dict], str]:
+        result: dict[str, object] = {}
+
+        def _worker() -> None:
+            try:
+                result["value"] = self._list_dir_detailed_ftplib_sync(remote_dir, limit)
+            except Exception as exc:
+                result["error"] = exc
+
+        worker = threading.Thread(target=_worker, name="ftps-ftplib-list", daemon=True)
+        worker.start()
+        worker.join(timeout=max(1, int(timeout)))
+        if worker.is_alive():
+            self._close_ftplib_client()
+            return [], "ftplib:timeout"
+        if "error" in result:
+            return [], f"ftplib:error:{result['error']}"
+        value = result.get("value")
+        if isinstance(value, tuple) and len(value) == 2:
+            return value  # type: ignore[return-value]
+        return [], "ftplib:empty"
 
     async def _list_names_async(self, remote_dir: str) -> set[str]:
         if not self._client:
