@@ -8,7 +8,7 @@ from dataclasses import replace
 from pathlib import Path
 from typing import Optional
 
-from flask import Flask, render_template, request
+from flask import Flask, render_template
 from telethon.errors import PhoneCodeExpiredError, PhoneCodeInvalidError, SessionPasswordNeededError
 
 from core.config import setup_logging
@@ -66,6 +66,7 @@ from web_form_ops import (
     _validate_sftp,
 )
 from web_routes_basic import register_basic_routes
+from web_actions import register_action_routes
 from web_worker import build_status_hook, run_worker_target
 
 
@@ -87,8 +88,7 @@ worker_loop: Optional[asyncio.AbstractEventLoop] = None
 worker_main_task: Optional[asyncio.Task] = None
 monitor_thread: Optional[threading.Thread] = None
 monitor_stop_event = threading.Event()
-runtime_session_name = ""
-runtime_remember_me = True
+runtime_state = {"session_name": "", "remember_me": True}
 
 
 def _load_saved_form() -> dict:
@@ -387,246 +387,45 @@ def _register_basic_routes() -> None:
 
 
 _register_basic_routes()
-
-
-@app.post("/authorize")
-def authorize():
-    global runtime_remember_me, runtime_session_name
-    form = _form_from_request()
-
-    try:
-        settings = _build_settings(form)
-    except ValueError as exc:
-        return _render(form, str(exc))
-
-    runtime_remember_me = bool(form["remember_me"])
-    runtime_session_name = settings.session_name
-    _store_remember_me(runtime_remember_me)
-    _store_enable_periodic_checks(bool(form["enable_periodic_checks"]))
-    if not runtime_remember_me:
-        _delete_session_files(settings.session_name)
-
-    proxy_ok, proxy_message = asyncio.run(_validate_proxy(settings))
-    if settings.use_mtproxy:
-        _set_proxy_status(True, proxy_ok, proxy_message)
-        if not proxy_ok:
-            return _render(form, proxy_message)
-    else:
-        _set_proxy_status(False, True, "MTProxy не используется.")
-
-    sftp_ok, sftp_message = asyncio.run(_validate_sftp(settings))
-    if settings.use_sftp:
-        _set_sftp_status(True, sftp_ok, sftp_message)
-        if not sftp_ok:
-            return _render(form, sftp_message)
-    else:
-        _set_sftp_status(False, True, "SFTP не используется.")
-
-    ftps_ok, ftps_message = asyncio.run(_validate_ftps(settings))
-    if settings.use_ftps:
-        _set_ftps_status(True, ftps_ok, ftps_message)
-        if not ftps_ok:
-            return _render(form, ftps_message)
-    else:
-        _set_ftps_status(False, True, "FTPS не используется.")
-
-    _store_settings(settings)
-    _upsert_current_channel_preference(settings)
-
-    try:
-        ok, auth_message, need_code, need_password = asyncio.run(
-            _authorize_user(settings, form["code"], form["password"])
-        )
-    except Exception as exc:
-        _set_auth_status(False, f"Ошибка авторизации: {exc}")
-        return _render(form, f"Ошибка авторизации: {exc}")
-
-    if not ok:
-        _set_auth_status(False, auth_message)
-        return _render(form, auth_message, need_code=need_code, need_password=need_password)
-
-    _set_auth_status(True, auth_message)
-
-    preview_ok, preview_message, items = asyncio.run(_fetch_preview(settings))
-    _set_preview_cache(items if preview_ok else [])
-
-    return _render(
-        form,
-        f"{proxy_status['message']} {sftp_status['message']} {ftps_status['message']} {auth_message} {preview_message}",
-    )
-
-
-@app.post("/start")
-def start_download():
-    global runtime_remember_me, runtime_session_name
-    form = _form_from_request()
-
-    try:
-        settings = _build_settings(form)
-    except ValueError as exc:
-        return _render(form, str(exc))
-
-    runtime_remember_me = bool(form["remember_me"])
-    runtime_session_name = settings.session_name
-    _store_remember_me(runtime_remember_me)
-    _store_enable_periodic_checks(bool(form["enable_periodic_checks"]))
-
-    proxy_ok, proxy_message = asyncio.run(_validate_proxy(settings))
-    if settings.use_mtproxy:
-        _set_proxy_status(True, proxy_ok, proxy_message)
-        if not proxy_ok:
-            return _render(form, proxy_message)
-    else:
-        _set_proxy_status(False, True, "MTProxy не используется.")
-
-    sftp_ok, sftp_message = asyncio.run(_validate_sftp(settings))
-    if settings.use_sftp:
-        _set_sftp_status(True, sftp_ok, sftp_message)
-        if not sftp_ok:
-            return _render(form, sftp_message)
-    else:
-        _set_sftp_status(False, True, "SFTP не используется.")
-
-    ftps_ok, ftps_message = asyncio.run(_validate_ftps(settings))
-    if settings.use_ftps:
-        _set_ftps_status(True, ftps_ok, ftps_message)
-        if not ftps_ok:
-            return _render(form, ftps_message)
-    else:
-        _set_ftps_status(False, True, "FTPS не используется.")
-
-    _store_settings(settings)
-    _upsert_current_channel_preference(settings)
-
-    channel_ok, channel_message = asyncio.run(_validate_channel(settings))
-    if not channel_ok:
-        return _render(form, channel_message)
-
-    if not preview_cache:
-        preview_ok, _, items = asyncio.run(_fetch_preview(settings))
-        _set_preview_cache(items if preview_ok else [])
-
-    allowed_message_ids = _pick_range_ids(preview_cache, form["from_index"], form["to_index"])
-    if allowed_message_ids is not None and len(allowed_message_ids) == 0:
-        return _render(form, "В выбранном диапазоне нет аудио.")
-
-    started, start_message = _start_worker(settings, allowed_message_ids, live_mode=True, source="manual")
-    if started:
-        return _render(
-            form,
-            f"{proxy_status['message']} {sftp_status['message']} {ftps_status['message']} {channel_message} {start_message}",
-        )
-    return _render(form, start_message)
-
-
-@app.post("/start_upload")
-def start_upload():
-    global runtime_remember_me, runtime_session_name
-    form = _form_from_request()
-
-    try:
-        settings = _build_settings(form, require_channel=True)
-    except ValueError as exc:
-        return _render(form, str(exc))
-
-    runtime_remember_me = bool(form["remember_me"])
-    runtime_session_name = settings.session_name
-    _store_remember_me(runtime_remember_me)
-    _store_enable_periodic_checks(bool(form["enable_periodic_checks"]))
-    _store_settings(settings)
-    _upsert_current_channel_preference(settings)
-
-    sftp_ok, sftp_message = asyncio.run(_validate_sftp(settings))
-    if settings.use_sftp:
-        _set_sftp_status(True, sftp_ok, sftp_message)
-        if not sftp_ok:
-            return _render(form, sftp_message)
-    else:
-        _set_sftp_status(False, True, "SFTP не используется.")
-
-    ftps_ok, ftps_message = asyncio.run(_validate_ftps(settings))
-    if settings.use_ftps:
-        _set_ftps_status(True, ftps_ok, ftps_message)
-        if not ftps_ok:
-            return _render(form, ftps_message)
-    else:
-        _set_ftps_status(False, True, "FTPS не используется.")
-
-    if not settings.use_sftp and not settings.use_ftps:
-        return _render(form, "Для upload включите SFTP или FTPS.")
-
-    started, start_message = _start_worker(
-        settings,
-        allowed_message_ids=None,
-        live_mode=False,
-        source="manual-upload",
-        upload_only=True,
-    )
-    if started:
-        return _render(form, f"{sftp_status['message']} {ftps_status['message']} {start_message}")
-    return _render(form, start_message)
-
-
-@app.post("/stop_server")
-def stop_server():
-    global worker_thread, monitor_thread
-
-    worker_stop_event.set()
-    with worker_lock:
-        if worker_loop and worker_main_task and not worker_main_task.done():
-            try:
-                worker_loop.call_soon_threadsafe(worker_main_task.cancel)
-            except Exception:
-                logging.exception("Failed to cancel worker task during server stop")
-    monitor_stop_event.set()
-    _set_status(message="Остановка сервера...", running=False, mode="idle")
-
-    if worker_thread and worker_thread.is_alive():
-        worker_thread.join(timeout=10)
-    if monitor_thread and monitor_thread.is_alive():
-        monitor_thread.join(timeout=5)
-
-    if not runtime_remember_me:
-        _delete_session_files(runtime_session_name)
-
-    shutdown_func = request.environ.get("werkzeug.server.shutdown")
-    if shutdown_func is not None:
-        shutdown_func()
-        return "Сервер остановлен."
-
-    def _force_exit() -> None:
-        # Flask 3 / certain launch modes may not expose werkzeug.server.shutdown.
-        # Fallback: terminate process after response is sent.
-        time.sleep(0.5)
-        os._exit(0)
-
-    threading.Thread(target=_force_exit, daemon=True).start()
-    return "Сервер остановлен (fallback)."
-
-
-@app.post("/stop_download")
-def stop_download():
-    global worker_thread
-    form = _form_from_request()
-    if not (worker_thread and worker_thread.is_alive()):
-        _set_status(running=False, mode="idle", message="Активная загрузка не выполняется.")
-        return _render(form, "Активная загрузка не выполняется.")
-
-    worker_stop_event.set()
-    with worker_lock:
-        if worker_loop and worker_main_task and not worker_main_task.done():
-            try:
-                worker_loop.call_soon_threadsafe(worker_main_task.cancel)
-            except Exception:
-                logging.exception("Failed to cancel worker task")
-    _set_status(message="Запрошена остановка текущей загрузки...")
-    worker_thread.join(timeout=15)
-
-    if worker_thread and worker_thread.is_alive():
-        return _render(form, "Остановка запрошена, ожидается завершение текущих задач.")
-
-    _set_status(running=False, mode="idle", message="Текущая задача остановлена.")
-    return _render(form, "Текущая задача остановлена.")
+register_action_routes(
+    app,
+    {
+        "render": _render,
+        "form_from_request": _form_from_request,
+        "build_settings": _build_settings,
+        "store_remember_me": _store_remember_me,
+        "store_enable_periodic_checks": _store_enable_periodic_checks,
+        "store_settings": _store_settings,
+        "upsert_current_channel_preference": _upsert_current_channel_preference,
+        "delete_session_files": _delete_session_files,
+        "validate_proxy": _validate_proxy,
+        "validate_sftp": _validate_sftp,
+        "validate_ftps": _validate_ftps,
+        "validate_channel": _validate_channel,
+        "authorize_user": _authorize_user,
+        "fetch_preview": _fetch_preview,
+        "pick_range_ids": _pick_range_ids,
+        "start_worker": _start_worker,
+        "set_auth_status": _set_auth_status,
+        "set_proxy_status": _set_proxy_status,
+        "set_sftp_status": _set_sftp_status,
+        "set_ftps_status": _set_ftps_status,
+        "set_preview_cache": _set_preview_cache,
+        "set_status": _set_status,
+        "get_preview_cache": lambda: preview_cache,
+        "proxy_status": proxy_status,
+        "sftp_status": sftp_status,
+        "ftps_status": ftps_status,
+        "runtime_state": runtime_state,
+        "worker_stop_event": worker_stop_event,
+        "monitor_stop_event": monitor_stop_event,
+        "worker_lock": worker_lock,
+        "get_worker_loop": lambda: worker_loop,
+        "get_worker_main_task": lambda: worker_main_task,
+        "get_worker_thread": lambda: worker_thread,
+        "get_monitor_thread": lambda: monitor_thread,
+    },
+)
 
 
 if __name__ == "__main__":
