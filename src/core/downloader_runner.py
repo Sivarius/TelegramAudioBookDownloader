@@ -4,6 +4,7 @@ from pathlib import Path
 from typing import Callable, Optional
 
 from telethon import events, utils
+from telethon.tl.custom.message import Message
 
 from core.config import sanitize_folder_name
 from core.db import AppDatabase
