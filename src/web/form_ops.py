@@ -67,6 +67,25 @@ def _load_saved_form(db_path: Path) -> dict:
 
 def _form_from_request(db_path: Path) -> dict:
     saved = _load_saved_form(db_path)
+    full_form_submit = any(
+        key in request.form
+        for key in (
+            "api_id",
+            "api_hash",
+            "phone",
+            "channel_id",
+            "download_dir",
+            "session_name",
+            "startup_scan_limit",
+            "download_concurrency",
+        )
+    )
+
+    def _checkbox(name: str) -> bool:
+        if full_form_submit:
+            return request.form.get(name) == "on"
+        return bool(saved.get(name, False))
+
     return {
         "api_id": request.form.get("api_id", saved["api_id"]).strip(),
         "api_hash": request.form.get("api_hash", saved["api_hash"]).strip(),
@@ -80,31 +99,31 @@ def _form_from_request(db_path: Path) -> dict:
         "password": request.form.get("password", "").strip(),
         "from_index": request.form.get("from_index", "").strip(),
         "to_index": request.form.get("to_index", "").strip(),
-        "use_mtproxy": request.form.get("use_mtproxy") == "on",
+        "use_mtproxy": _checkbox("use_mtproxy"),
         "mtproxy_link": request.form.get("mtproxy_link", saved["mtproxy_link"]).strip(),
-        "use_sftp": request.form.get("use_sftp") == "on",
+        "use_sftp": _checkbox("use_sftp"),
         "sftp_host": request.form.get("sftp_host", saved["sftp_host"]).strip(),
         "sftp_port": request.form.get("sftp_port", saved["sftp_port"]).strip(),
         "sftp_username": request.form.get("sftp_username", saved["sftp_username"]).strip(),
         "sftp_password": request.form.get("sftp_password", saved["sftp_password"]).strip(),
         "sftp_remote_dir": request.form.get("sftp_remote_dir", saved["sftp_remote_dir"]).strip(),
-        "cleanup_local_after_sftp": request.form.get("cleanup_local_after_sftp") == "on",
-        "use_ftps": request.form.get("use_ftps") == "on",
+        "cleanup_local_after_sftp": _checkbox("cleanup_local_after_sftp"),
+        "use_ftps": _checkbox("use_ftps"),
         "ftps_host": request.form.get("ftps_host", saved["ftps_host"]).strip(),
         "ftps_port": request.form.get("ftps_port", saved["ftps_port"]).strip(),
         "ftps_username": request.form.get("ftps_username", saved["ftps_username"]).strip(),
         "ftps_password": request.form.get("ftps_password", saved["ftps_password"]).strip(),
         "ftps_remote_dir": request.form.get("ftps_remote_dir", saved["ftps_remote_dir"]).strip(),
         "ftps_encoding": request.form.get("ftps_encoding", saved["ftps_encoding"]).strip().lower(),
-        "ftps_verify_tls": request.form.get("ftps_verify_tls") == "on",
-        "ftps_passive_mode": request.form.get("ftps_passive_mode") == "on",
+        "ftps_verify_tls": _checkbox("ftps_verify_tls"),
+        "ftps_passive_mode": _checkbox("ftps_passive_mode"),
         "ftps_security_mode": request.form.get("ftps_security_mode", saved["ftps_security_mode"]).strip().lower(),
         "ftps_upload_concurrency": request.form.get("ftps_upload_concurrency", saved["ftps_upload_concurrency"]).strip(),
-        "cleanup_local_after_ftps": request.form.get("cleanup_local_after_ftps") == "on",
-        "ftps_verify_hash": request.form.get("ftps_verify_hash") == "on",
-        "download_new": request.form.get("download_new") == "on",
-        "remember_me": request.form.get("remember_me") == "on",
-        "enable_periodic_checks": request.form.get("enable_periodic_checks") == "on",
+        "cleanup_local_after_ftps": _checkbox("cleanup_local_after_ftps"),
+        "ftps_verify_hash": _checkbox("ftps_verify_hash"),
+        "download_new": _checkbox("download_new"),
+        "remember_me": _checkbox("remember_me"),
+        "enable_periodic_checks": _checkbox("enable_periodic_checks"),
     }
 
 
