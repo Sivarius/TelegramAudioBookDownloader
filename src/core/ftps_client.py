@@ -270,7 +270,13 @@ class FTPSSync:
         if isinstance(exc, OSError) and getattr(exc, "errno", None) in {32, 54, 104, 110}:
             return True
         text = str(exc).lower()
-        return "timed out" in text or "broken pipe" in text or "eof occurred" in text
+        return (
+            "timed out" in text
+            or "broken pipe" in text
+            or "eof occurred" in text
+            or "ftps не подключен" in text
+            or "not connected" in text
+        )
 
     def _reconnect_current_channel_dir_locked(self) -> None:
         channel_folder = ""

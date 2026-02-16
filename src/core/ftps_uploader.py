@@ -1,3 +1,4 @@
+import asyncio
 import os
 import posixpath
 from pathlib import PurePosixPath
@@ -77,7 +78,22 @@ async def upload_file_if_needed_async(
     if remote_name in sync._remote_file_names:
         remote_exists = True
     else:
-        remote_exists = await sync._remote_exists_async(remote_path)
+        # IMPORTANT:
+        # Avoid aioftp MLST/exists pre-check here. On some FTPS servers (SivaNAS),
+        # MLST "550 can't be listed" may desync control replies and break next EPSV.
+        # Use isolated ftplib control channel for existence probe instead.
+        try:
+            ok_fb, info_fb = sync._check_remote_file_status_ftplib(
+                local_file_path,
+                remote_path,
+                verify_hash=False,
+                local_hash="",
+            )
+            if ok_fb or "remote_present_mismatch" in str(info_fb):
+                remote_exists = True
+                sync._remote_file_names.add(file_name)
+        except Exception:
+            remote_exists = False
 
     if remote_exists and not force_upload:
         manifest_ok, manifest_remote_path = sync._manifest_match_locked(
@@ -88,7 +104,13 @@ async def upload_file_if_needed_async(
         if manifest_ok:
             manifest_path = manifest_remote_path or remote_path
             try:
-                if await sync._remote_exists_async(manifest_path):
+                ok_fb, _ = sync._check_remote_file_status_ftplib(
+                    local_file_path,
+                    manifest_path,
+                    verify_hash=False,
+                    local_hash="",
+                )
+                if ok_fb:
                     sync._remote_file_names.add(file_name)
                     return (
                         False,
@@ -114,26 +136,51 @@ async def upload_file_if_needed_async(
     if force_upload or not remote_exists or reuploaded:
         total_size = os.path.getsize(local_file_path)
         sent_bytes = 0
-        with open(local_file_path, "rb") as file_obj:
-            async with sync._client.upload_stream(PurePosixPath(remote_path), offset=0) as stream:
-                while True:
-                    chunk = file_obj.read(1024 * 256)
-                    if not chunk:
-                        break
-                    await stream.write(chunk)
-                    sent_bytes += len(chunk)
-                    if progress_callback:
-                        progress_callback(min(sent_bytes, total_size), total_size)
-        if progress_callback:
+        used_ftplib_fallback = False
+        try:
+            with open(local_file_path, "rb") as file_obj:
+                async with sync._client.upload_stream(PurePosixPath(remote_path), offset=0) as stream:
+                    while True:
+                        chunk = file_obj.read(1024 * 256)
+                        if not chunk:
+                            break
+                        await stream.write(chunk)
+                        sent_bytes += len(chunk)
+                        if progress_callback:
+                            progress_callback(min(sent_bytes, total_size), total_size)
+            if progress_callback:
+                progress_callback(total_size, total_size)
+        except Exception as exc:
+            if not _is_control_desync_error(exc):
+                raise
+            await asyncio.to_thread(
+                _upload_via_ftplib_sync,
+                sync,
+                local_file_path,
+                remote_path,
+                progress_callback,
+                total_size,
+            )
+            used_ftplib_fallback = True
+        if used_ftplib_fallback and progress_callback:
             progress_callback(total_size, total_size)
         sync._remote_file_names.add(file_name)
         uploaded = True
 
-    size_match, hash_match = await sync._verify_remote_file_async(
+    ok_fb, _ = sync._check_remote_file_status_ftplib(
         local_file_path,
         remote_path,
         verify_hash=verify_hash,
+        local_hash="",
     )
+    if ok_fb:
+        size_match, hash_match = True, True
+    else:
+        size_match, hash_match = await sync._verify_remote_file_async(
+            local_file_path,
+            remote_path,
+            verify_hash=verify_hash,
+        )
     local_hash_dbg = ""
     remote_hash_dbg = ""
     if verify_hash and size_match and not hash_match:
@@ -166,3 +213,42 @@ async def upload_file_if_needed_async(
         uploaded,
         f"{reason}; remote={remote_path}; size_match={size_match}; hash_match={hash_match}; verified={verified}",
     )
+
+
+def _is_control_desync_error(exc: Exception) -> bool:
+    text = str(exc).lower()
+    return (
+        "waiting for ('229',) but got 200" in text
+        or "waiting for ('200',) but got 229" in text
+        or "list index out of range" in text
+        or "can't be listed" in text
+    )
+
+
+def _upload_via_ftplib_sync(
+    sync,
+    local_file_path: str,
+    remote_path: str,
+    progress_callback: Optional[Callable[[int, int], None]],
+    total_size: int,
+) -> None:
+    client = sync._get_ftplib_client()
+    sent = 0
+
+    def _cb(chunk: bytes) -> None:
+        nonlocal sent
+        sent += len(chunk)
+        if progress_callback:
+            progress_callback(min(sent, total_size), total_size)
+
+    try:
+        with open(local_file_path, "rb") as file_obj:
+            client.storbinary(
+                f"STOR {remote_path}",
+                file_obj,
+                blocksize=1024 * 256,
+                callback=_cb,
+            )
+    except Exception:
+        sync._close_ftplib_client()
+        raise
