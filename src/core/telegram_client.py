@@ -1,4 +1,4 @@
-from typing import Optional
+from typing import Optional, Set
 
 from telethon import TelegramClient, connection, utils
 from telethon.tl.custom.message import Message
@@ -69,3 +69,41 @@ def is_audio_message(message: Message) -> bool:
         return message.document.mime_type.startswith("audio/")
 
     return False
+
+
+def peer_id_variants_from_marked(marked_id: Optional[int]) -> Set[int]:
+    variants: Set[int] = set()
+    if marked_id is None:
+        return variants
+    try:
+        marked = int(marked_id)
+    except Exception:
+        return variants
+    variants.add(marked)
+    try:
+        raw_id, _ = utils.resolve_id(marked)
+        variants.add(int(raw_id))
+    except Exception:
+        pass
+    return variants
+
+
+def message_channel_id_variants(message: Message) -> Set[int]:
+    marked: Optional[int] = None
+    try:
+        if getattr(message, "peer_id", None) is not None:
+            marked = int(utils.get_peer_id(message.peer_id))
+    except Exception:
+        marked = None
+    if marked is None:
+        try:
+            if message.chat_id is not None:
+                marked = int(message.chat_id)
+        except Exception:
+            marked = None
+    return peer_id_variants_from_marked(marked)
+
+
+def entity_channel_id_variants(entity) -> Set[int]:
+    marked = int(utils.get_peer_id(entity))
+    return peer_id_variants_from_marked(marked)

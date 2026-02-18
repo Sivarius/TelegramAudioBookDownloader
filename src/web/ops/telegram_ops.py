@@ -1,8 +1,11 @@
-from telethon import utils
-
 from core.db import AppDatabase
 from core.models import Settings
-from core.telegram_client import create_telegram_client, is_audio_message, resolve_channel_entity
+from core.telegram_client import (
+    create_telegram_client,
+    entity_channel_id_variants,
+    is_audio_message,
+    resolve_channel_entity,
+)
 
 
 async def fetch_preview(
@@ -18,13 +21,7 @@ async def fetch_preview(
             return False, "Сначала выполните авторизацию.", []
 
         channel = await resolve_channel_entity(client, settings.channel)
-        channel_id = int(utils.get_peer_id(channel))
-        alt_ids = {channel_id}
-        try:
-            raw_id, _ = utils.resolve_id(channel_id)
-            alt_ids.add(int(raw_id))
-        except Exception:
-            pass
+        alt_ids = entity_channel_id_variants(channel)
         db = AppDatabase(db_path)
 
         items: list[dict] = []
@@ -41,8 +38,12 @@ async def fetch_preview(
                 title = file_name or (message.message or "audio")
                 date_text = message.date.strftime("%Y-%m-%d %H:%M") if message.date else ""
                 message_id = int(message.id)
-                is_downloaded = any(db.already_downloaded(cid, message_id) for cid in alt_ids)
-                is_remote_uploaded = any(db.is_remote_uploaded(cid, message_id) for cid in alt_ids)
+                is_downloaded = any(
+                    db.already_downloaded(cid, message_id) for cid in alt_ids
+                )
+                is_remote_uploaded = any(
+                    db.is_remote_uploaded(cid, message_id) for cid in alt_ids
+                )
                 items.append(
                     {
                         "index": index,
@@ -69,13 +70,7 @@ async def resolve_last_downloaded_message_id(settings: Settings, db_path) -> int
     await client.connect()
     try:
         channel = await resolve_channel_entity(client, settings.channel)
-        channel_id = int(utils.get_peer_id(channel))
-        alt_ids = {channel_id}
-        try:
-            raw_id, _ = utils.resolve_id(channel_id)
-            alt_ids.add(int(raw_id))
-        except Exception:
-            pass
+        alt_ids = entity_channel_id_variants(channel)
         db = AppDatabase(db_path)
         try:
             return max(db.get_last_downloaded_message_id(cid) for cid in alt_ids)

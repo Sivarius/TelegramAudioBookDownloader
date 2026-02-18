@@ -4,11 +4,11 @@ from pathlib import Path
 from typing import Callable, Optional
 
 from telethon.errors import FloodWaitError
-from telethon import utils
 from telethon.tl.custom.message import Message
 
 from core.db import AppDatabase
 from core.telegram_client import is_audio_message
+from core.telegram_client import message_channel_id_variants
 from core.downloader_utils import (
     _build_target_path,
     _expected_size,
@@ -25,16 +25,11 @@ async def download_if_needed(
     remote_sync: Optional[object] = None,
     cleanup_local_after_remote: bool = False,
 ) -> None:
-    channel_id = None
-    try:
-        if getattr(message, "peer_id", None) is not None:
-            channel_id = int(utils.get_peer_id(message.peer_id))
-    except Exception:
-        channel_id = None
-    if channel_id is None:
-        channel_id = message.chat_id
-    if channel_id is None:
+    channel_ids = message_channel_id_variants(message)
+    if not channel_ids:
         return
+    # Prefer marked ID first for stable channel_state keys.
+    channel_id = sorted(channel_ids, key=lambda cid: 0 if cid < 0 else 1)[0]
 
     if not is_audio_message(message):
         if status_hook:
