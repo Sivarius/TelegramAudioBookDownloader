@@ -18,7 +18,13 @@ async def fetch_preview(
             return False, "Сначала выполните авторизацию.", []
 
         channel = await resolve_channel_entity(client, settings.channel)
-        channel_id = utils.get_peer_id(channel)
+        channel_id = int(utils.get_peer_id(channel))
+        alt_ids = {channel_id}
+        try:
+            raw_id, _ = utils.resolve_id(channel_id)
+            alt_ids.add(int(raw_id))
+        except Exception:
+            pass
         db = AppDatabase(db_path)
 
         items: list[dict] = []
@@ -34,7 +40,9 @@ async def fetch_preview(
 
                 title = file_name or (message.message or "audio")
                 date_text = message.date.strftime("%Y-%m-%d %H:%M") if message.date else ""
-                is_downloaded = db.already_downloaded(channel_id, int(message.id))
+                message_id = int(message.id)
+                is_downloaded = any(db.already_downloaded(cid, message_id) for cid in alt_ids)
+                is_remote_uploaded = any(db.is_remote_uploaded(cid, message_id) for cid in alt_ids)
                 items.append(
                     {
                         "index": index,
@@ -42,7 +50,7 @@ async def fetch_preview(
                         "title": title.replace("\n", " ")[:80],
                         "date": date_text,
                         "downloaded": is_downloaded,
-                        "remote_uploaded": db.is_remote_uploaded(channel_id, int(message.id)),
+                        "remote_uploaded": is_remote_uploaded,
                     }
                 )
                 index += 1
@@ -61,10 +69,16 @@ async def resolve_last_downloaded_message_id(settings: Settings, db_path) -> int
     await client.connect()
     try:
         channel = await resolve_channel_entity(client, settings.channel)
-        channel_id = utils.get_peer_id(channel)
+        channel_id = int(utils.get_peer_id(channel))
+        alt_ids = {channel_id}
+        try:
+            raw_id, _ = utils.resolve_id(channel_id)
+            alt_ids.add(int(raw_id))
+        except Exception:
+            pass
         db = AppDatabase(db_path)
         try:
-            return db.get_last_downloaded_message_id(channel_id)
+            return max(db.get_last_downloaded_message_id(cid) for cid in alt_ids)
         finally:
             db.close()
     finally:

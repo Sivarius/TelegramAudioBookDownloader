@@ -233,9 +233,11 @@ def register_basic_routes(app, deps: dict) -> None:
     def suggest_new_range():
         form = deps["form_from_request"]()
         try:
-            settings = deps["build_settings"](form, require_channel=True)
+            settings = deps["build_settings"](form, require_channel=False)
         except ValueError as exc:
             return jsonify({"ok": False, "message": str(exc)}), 400
+        if not (settings.channel or "").strip():
+            return jsonify({"ok": False, "message": "Укажите CHANNEL_ID."}), 200
 
         preview_cache = deps["get_preview_cache"]()
         if not preview_cache:
@@ -246,10 +248,23 @@ def register_basic_routes(app, deps: dict) -> None:
         if not preview_cache:
             return jsonify({"ok": False, "message": "Нет данных предпросмотра. Нажмите Обновить предпросмотр."}), 200
 
+        last_downloaded_id = 0
+        db = AppDatabase(deps["db_path"])
         try:
-            last_downloaded_id = asyncio.run(deps["resolve_last_downloaded_message_id"](settings))
-        except Exception as exc:
-            return jsonify({"ok": False, "message": f"Не удалось вычислить диапазон новых: {exc}"}), 200
+            state = db.get_channel_state_by_ref(settings.channel)
+            last_downloaded_id = int(state.get("last_message_id") or 0)
+            if last_downloaded_id <= 0:
+                channel_id = int(db.get_channel_id_by_ref(settings.channel) or 0)
+                if channel_id > 0:
+                    last_downloaded_id = int(db.get_last_downloaded_message_id(channel_id) or 0)
+        finally:
+            db.close()
+
+        if last_downloaded_id <= 0:
+            try:
+                last_downloaded_id = int(asyncio.run(deps["resolve_last_downloaded_message_id"](settings)) or 0)
+            except Exception as exc:
+                return jsonify({"ok": False, "message": f"Не удалось вычислить диапазон новых: {exc}"}), 200
 
         from_index = 0
         to_index = int(len(preview_cache))

@@ -239,24 +239,36 @@ async function applyDownloadNewRange(enabled) {
   const fromInput = byId('from_index');
   const toInput = byId('to_index');
   const form = document.querySelector('form');
+  const status = byId('channel-menu-status');
+  const result = byId('result-message');
   if (!fromInput || !toInput || !form) return;
 
-  fromInput.disabled = enabled;
-  toInput.disabled = enabled;
-  if (!enabled) return;
+  if (!enabled) {
+    fromInput.disabled = false;
+    toInput.disabled = false;
+    return;
+  }
 
   const data = new FormData(form);
+  fromInput.disabled = false;
+  toInput.disabled = false;
   try {
     const response = await fetch('/suggest_new_range', { method: 'POST', body: data });
-    const payload = await response.json();
-    if (!payload || !payload.ok) return;
+    const payload = await response.json().catch(() => ({}));
+    if (!payload || !payload.ok) {
+      if (status && payload?.message) status.textContent = payload.message;
+      if (result && payload?.message) result.textContent = `Результат: ${payload.message}`;
+      return;
+    }
 
     fromInput.value = payload.from_index || '';
     toInput.value = payload.to_index || '';
-    const status = byId('channel-menu-status');
     if (status && payload.message) status.textContent = payload.message;
+    if (result && payload.message) result.textContent = `Результат: ${payload.message}`;
+    fromInput.disabled = true;
+    toInput.disabled = true;
   } catch {
-    // ignore suggestion errors
+    if (result) result.textContent = 'Результат: не удалось получить диапазон новых глав.';
   }
 }
 

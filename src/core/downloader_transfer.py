@@ -4,6 +4,7 @@ from pathlib import Path
 from typing import Callable, Optional
 
 from telethon.errors import FloodWaitError
+from telethon import utils
 from telethon.tl.custom.message import Message
 
 from core.db import AppDatabase
@@ -24,7 +25,14 @@ async def download_if_needed(
     remote_sync: Optional[object] = None,
     cleanup_local_after_remote: bool = False,
 ) -> None:
-    channel_id = message.chat_id
+    channel_id = None
+    try:
+        if getattr(message, "peer_id", None) is not None:
+            channel_id = int(utils.get_peer_id(message.peer_id))
+    except Exception:
+        channel_id = None
+    if channel_id is None:
+        channel_id = message.chat_id
     if channel_id is None:
         return
 
