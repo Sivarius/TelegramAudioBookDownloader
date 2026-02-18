@@ -16,7 +16,12 @@ from core.db import AppDatabase
 from core.models import Settings
 from core.telegram_client import create_telegram_client, is_audio_message, resolve_channel_entity
 from web.ops.ftps_ops import fetch_ftps_preview, ftps_audit_selected_channel
-from web.ops.telegram_ops import fetch_preview, pick_range_ids, resolve_last_downloaded_message_id
+from web.ops.telegram_ops import (
+    fetch_preview,
+    pick_range_ids,
+    resolve_effective_last_downloaded_message_id,
+    resolve_last_downloaded_message_id,
+)
 from web.channels import (
     collect_saved_channels_cached as channels_collect_saved_channels_cached,
     collect_saved_channels_status as channels_collect_saved_channels_status,
@@ -244,6 +249,10 @@ async def _resolve_last_downloaded_message_id(settings: Settings) -> int:
     return await resolve_last_downloaded_message_id(settings, DB_PATH)
 
 
+async def _resolve_effective_last_downloaded_message_id(settings: Settings) -> int:
+    return await resolve_effective_last_downloaded_message_id(settings, DB_PATH)
+
+
 async def _ftps_audit_selected_channel(settings: Settings) -> tuple[bool, str]:
     return await ftps_audit_selected_channel(settings, DB_PATH, _set_status, worker_status)
 
@@ -380,6 +389,7 @@ def _register_basic_routes() -> None:
             "collect_saved_channels_cached": _collect_saved_channels_cached,
             "safe_int": _safe_int,
             "resolve_last_downloaded_message_id": _resolve_last_downloaded_message_id,
+            "resolve_effective_last_downloaded_message_id": _resolve_effective_last_downloaded_message_id,
         },
     )
 

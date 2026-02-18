@@ -4,9 +4,6 @@ from dataclasses import replace
 
 from flask import Response, jsonify, request, stream_with_context
 
-from core.db import AppDatabase
-
-
 def register_basic_routes(app, deps: dict) -> None:
     @app.get("/")
     def index():
@@ -248,23 +245,12 @@ def register_basic_routes(app, deps: dict) -> None:
         if not preview_cache:
             return jsonify({"ok": False, "message": "Нет данных предпросмотра. Нажмите Обновить предпросмотр."}), 200
 
-        last_downloaded_id = 0
-        db = AppDatabase(deps["db_path"])
         try:
-            state = db.get_channel_state_by_ref(settings.channel)
-            last_downloaded_id = int(state.get("last_message_id") or 0)
-            if last_downloaded_id <= 0:
-                channel_id = int(db.get_channel_id_by_ref(settings.channel) or 0)
-                if channel_id > 0:
-                    last_downloaded_id = int(db.get_last_downloaded_message_id(channel_id) or 0)
-        finally:
-            db.close()
-
-        if last_downloaded_id <= 0:
-            try:
-                last_downloaded_id = int(asyncio.run(deps["resolve_last_downloaded_message_id"](settings)) or 0)
-            except Exception as exc:
-                return jsonify({"ok": False, "message": f"Не удалось вычислить диапазон новых: {exc}"}), 200
+            last_downloaded_id = int(
+                asyncio.run(deps["resolve_effective_last_downloaded_message_id"](settings)) or 0
+            )
+        except Exception as exc:
+            return jsonify({"ok": False, "message": f"Не удалось вычислить диапазон новых: {exc}"}), 200
 
         from_index = 0
         to_index = int(len(preview_cache))

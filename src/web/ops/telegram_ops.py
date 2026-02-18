@@ -80,6 +80,23 @@ async def resolve_last_downloaded_message_id(settings: Settings, db_path) -> int
         await client.disconnect()
 
 
+async def resolve_effective_last_downloaded_message_id(settings: Settings, db_path) -> int:
+    db = AppDatabase(db_path)
+    try:
+        state = db.get_channel_state_by_ref(settings.channel)
+        last_downloaded_id = int(state.get("last_message_id") or 0)
+        if last_downloaded_id > 0:
+            return last_downloaded_id
+        channel_id = int(db.get_channel_id_by_ref(settings.channel) or 0)
+        if channel_id > 0:
+            last_downloaded_id = int(db.get_last_downloaded_message_id(channel_id) or 0)
+            if last_downloaded_id > 0:
+                return last_downloaded_id
+    finally:
+        db.close()
+    return int(await resolve_last_downloaded_message_id(settings, db_path))
+
+
 def pick_range_ids(items: list[dict], from_index_raw: str, to_index_raw: str, safe_int) -> set[int] | None:
     if not from_index_raw and not to_index_raw:
         return None
